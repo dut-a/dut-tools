@@ -1,0 +1,82 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["*/v*"]
+permissions:
+  contents: read
+jobs:
+  detect:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      tools: ${{ steps.changed.outputs.tools }}
+      any: ${{ steps.changed.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - id: changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools="$(python3 scripts/changed-tools --base '${{ github.event.pull_request.base.sha }}' --head '${{ github.event.pull_request.head.sha }}' --format json)"
+          echo "tools=$tools" >> "$GITHUB_OUTPUT"
+          [[ "$tools" == "[]" ]] && echo "any=false" >> "$GITHUB_OUTPUT" || echo "any=true" >> "$GITHUB_OUTPUT"
+  structural:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - name: Structural quality
+        run: |
+          python3 scripts/registry.py validate
+          python3 -m unittest discover -s tests/structural -p 'test_*.py' -v
+          ./scripts/lint
+  changed-tools:
+    if: github.event_name == 'pull_request' && needs.detect.outputs.any == 'true'
+    needs: detect
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: ${{ fromJSON(needs.detect.outputs.tools) }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - name: Tool tests
+        run: ./scripts/test --tool "${{ matrix.tool }}"
+      - name: CLI contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          entry="$(python3 scripts/registry.py json '${{ matrix.tool }}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["entrypoint"])')"
+          "$entry" --help >/dev/null
+          "$entry" --version
+  full-release-gate:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - run: make release-gate
+  release-tag:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - name: Validate release tag
+        run: python3 scripts/validate-release-tag "${GITHUB_REF#refs/tags/}"
+      - name: Full release gate
+        run: make release-gate

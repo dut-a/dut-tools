@@ -1,0 +1,10 @@
+version = 1
+
+[workspace]
+roots = ["~/dev/tembeek", "~/dev/clients"]
+
+[ssh]
+include = "~/.ssh/config.d/git-context.conf"
+
+[completion]
+directory = "~/.config/git-context/completions"

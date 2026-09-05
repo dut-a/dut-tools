@@ -1,0 +1,10 @@
+version = 1
+
+[[generic.validations]]
+name = "tests"
+argv = ["./scripts/test"]
+
+[[generic.validations]]
+name = "lint"
+argv = ["./scripts/lint"]
+cwd = "."

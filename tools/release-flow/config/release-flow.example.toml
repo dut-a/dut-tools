@@ -1,0 +1,11 @@
+version = 1
+[settings]
+require_clean_git = true
+[[target]]
+name = "root version"
+type = "plain"
+path = "VERSION"
+[[verify]]
+name = "tests"
+argv = ["./scripts/test"]
+timeout_seconds = 120

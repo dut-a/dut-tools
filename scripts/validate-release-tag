@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+import argparse,re,sys,tomllib
+from pathlib import Path
+ROOT=Path(__file__).resolve().parents[1]
+TAG_RE=re.compile(r'^(?P<tool>[a-z0-9][a-z0-9-]*)/v(?P<version>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$')
+p=argparse.ArgumentParser(description='Validate <tool>/v<semver> against dut-tools metadata.'); p.add_argument('tag'); a=p.parse_args(); m=TAG_RE.fullmatch(a.tag)
+if not m: print('ERROR: tag must be <tool>/v<semver>',file=sys.stderr); raise SystemExit(2)
+with (ROOT/'tools.toml').open('rb') as fh: tools=tomllib.load(fh)['tools']
+tool,version=m.group('tool'),m.group('version')
+if tool not in tools: print(f'ERROR: unknown tool {tool!r}',file=sys.stderr); raise SystemExit(2)
+meta=tools[tool]
+if meta['status']!='active': print(f'ERROR: tool {tool!r} is not active',file=sys.stderr); raise SystemExit(2)
+declared=(ROOT/meta['version_file']).read_text().strip()
+if declared!=version: print(f'ERROR: tag version {version} != declared {declared}',file=sys.stderr); raise SystemExit(1)
+changelog=(ROOT/meta['path']/'CHANGELOG.md').read_text()
+if version not in changelog: print(f'ERROR: CHANGELOG missing {version}',file=sys.stderr); raise SystemExit(1)
+print(f'PASS {a.tag}')

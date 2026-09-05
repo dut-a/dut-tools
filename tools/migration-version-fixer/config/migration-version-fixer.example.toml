@@ -1,0 +1,19 @@
+version = 1
+
+kind = "auto"
+scope = "auto"
+flyway_strategy = "auto"
+git_protect = true
+git_base = "origin/main"
+
+[flyway]
+locations = [
+  "classpath:db/migration"
+]
+
+[exclude]
+patterns = [
+  "**/target/**",
+  "**/build/**",
+  "**/vendor/**"
+]

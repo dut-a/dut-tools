@@ -1,0 +1,15 @@
+version = 1
+strict = false
+
+[allow]
+emails = ["legacy@example.com"]
+names = ["Legacy Build Bot"]
+
+[[allow.identity]]
+name = "Release Bot"
+email = "release@example.com"
+
+[[repository]]
+path = "~/dev/legacy-project"
+allowed_emails = ["old@example.com"]
+allowed_profiles = ["clients"]

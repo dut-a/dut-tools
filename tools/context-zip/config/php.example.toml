@@ -1,0 +1,5 @@
+# Example only. Replace with the real context-zip configuration contract
+# when the authoritative PHP implementation is migrated.
+
+[context]
+include_tests = false

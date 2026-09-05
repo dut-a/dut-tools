@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "stack": "auto",
+  "whole_project": false,
+  "include_untracked": false,
+  "include_binaries": false,
+  "max_file_mb": 4,
+  "include": [],
+  "exclude": [
+    ".git/**",
+    "node_modules/**",
+    "vendor/**",
+    "target/**",
+    "build/**",
+    "*.log"
+  ]
+}

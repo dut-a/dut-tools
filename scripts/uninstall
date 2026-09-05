@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+TOOL=""
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/uninstall [--tool NAME]
+
+Remove only symlinks that point back into this dut-tools checkout.
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    --tool) TOOL="${2:?missing tool name}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+python3 - "$ROOT" "$BIN_DIR" "$TOOL" <<'PY'
+import os, sys, tomllib
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+bin_dir = Path(sys.argv[2]).expanduser()
+selected = sys.argv[3]
+
+with (root / "tools.toml").open("rb") as fh:
+    registry = tomllib.load(fh)["tools"]
+
+if selected and selected not in registry:
+    print(f"ERROR: unknown tool {selected!r}", file=sys.stderr)
+    raise SystemExit(2)
+
+names = [selected] if selected else sorted(registry)
+removed = 0
+
+for name in names:
+    target = bin_dir / registry[name]["command"]
+    if not target.exists() and not target.is_symlink():
+        continue
+    if not target.is_symlink():
+        print(f"SKIP {target}: not a symlink")
+        continue
+    try:
+        resolved = target.resolve(strict=False)
+        resolved.relative_to(root)
+    except ValueError:
+        print(f"SKIP {target}: points outside dut-tools")
+        continue
+    target.unlink()
+    print(f"REMOVE {target}")
+    removed += 1
+
+print(f"Removed {removed} tool(s).")
+PY

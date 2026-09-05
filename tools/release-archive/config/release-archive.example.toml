@@ -1,0 +1,7 @@
+version = 1
+format = "both"
+require_clean = true
+include_untracked = false
+source_date_epoch = 0
+include = []
+exclude = ["docs/internal/**", "**/*.tmp"]

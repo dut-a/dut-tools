@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import os
+import stat
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+EXCLUDE_PARTS = {"__pycache__", ".pytest_cache", ".git"}
+
+def zip_info_for(path: Path, arcname: str) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo(arcname)
+    # Deterministic DOS-compatible lower-bound timestamp.
+    info.date_time = (1980, 1, 1, 0, 0, 0)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    mode = stat.S_IMODE(path.stat().st_mode)
+    info.create_system = 3  # Unix
+    info.external_attr = (stat.S_IFREG | mode) << 16
+    return info
+
+def main() -> int:
+    p = argparse.ArgumentParser(description="Build a dut-tools ZIP preserving executable POSIX modes.")
+    p.add_argument("output")
+    args = p.parse_args()
+
+    output = Path(args.output).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.exists():
+        output.unlink()
+
+    with zipfile.ZipFile(output, "w") as zf:
+        for path in sorted(ROOT.rglob("*")):
+            if not path.is_file():
+                continue
+            if any(part in EXCLUDE_PARTS for part in path.parts):
+                continue
+            arcname = str(Path("dut-tools") / path.relative_to(ROOT))
+            info = zip_info_for(path, arcname)
+            zf.writestr(info, path.read_bytes())
+
+    with zipfile.ZipFile(output) as zf:
+        bad = zf.testzip()
+        if bad:
+            raise SystemExit(f"ZIP integrity failure at {bad}")
+
+    print(output)
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())

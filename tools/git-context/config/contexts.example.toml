@@ -1,0 +1,23 @@
+version = 1
+
+[settings]
+remove_global_identity = true
+use_config_only = true
+
+[profiles.tembeek]
+name = "Dut Athian"
+email = "dut.dev@tembeek.com"
+
+[profiles.clients]
+name = "Dut Athian"
+email = "dut.clients@tembeek.com"
+
+[[contexts]]
+name = "tembeek"
+root = "~/dev/tembeek"
+profile = "tembeek"
+
+[[contexts]]
+name = "clients"
+root = "~/dev/clients"
+profile = "clients"

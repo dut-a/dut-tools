@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON="${PYTHON:-python3}"
+FAIL=0
+
+section() {
+  printf '\n== %s ==\n' "$1"
+}
+
+pass() { printf 'PASS  %s\n' "$1"; }
+fail() { printf 'FAIL  %s\n' "$1"; FAIL=1; }
+
+section "Registry"
+if "$PYTHON" "$ROOT/scripts/registry.py" validate; then
+  pass "registry validation"
+else
+  fail "registry validation"
+fi
+
+section "Lifecycle"
+if "$PYTHON" - "$ROOT" <<'PY'
+import sys, tomllib
+from pathlib import Path
+root = Path(sys.argv[1])
+with (root / "tools.toml").open("rb") as fh:
+    tools = tomllib.load(fh)["tools"]
+bad = [(name, meta["status"]) for name, meta in tools.items() if meta["status"] != "active"]
+if bad:
+    for name, status in bad:
+        print(f"{name}: status={status}")
+    raise SystemExit(1)
+print(f"All {len(tools)} registered tools are active.")
+PY
+then pass "all registered tools active"
+else fail "all registered tools active"
+fi
+
+section "Repository quality"
+if "$ROOT/scripts/check"; then
+  pass "repository checks"
+else
+  fail "repository checks"
+fi
+
+
+section "Implementation tests"
+if "$ROOT/scripts/test"; then
+  pass "all active tool implementation tests"
+else
+  fail "all active tool implementation tests"
+fi
+
+section "CLI contract"
+if "$PYTHON" - "$ROOT" <<'PY'
+import subprocess, sys, tomllib
+from pathlib import Path
+root = Path(sys.argv[1])
+with (root / "tools.toml").open("rb") as fh:
+    tools = tomllib.load(fh)["tools"]
+for name, meta in sorted(tools.items()):
+    entry = root / meta["entrypoint"]
+    for flag in ("--help", "--version"):
+        cp = subprocess.run([str(entry), flag], cwd=root, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+        if cp.returncode != 0 or not cp.stdout.strip():
+            print(f"{name} {flag}: FAIL")
+            raise SystemExit(1)
+        print(f"{name} {flag}: PASS")
+PY
+then pass "active CLI help/version"
+else fail "active CLI help/version"
+fi
+
+section "Installability"
+TMP_PREFIX="$(mktemp -d)"
+trap 'rm -rf "$TMP_PREFIX"' EXIT
+if BIN_DIR="$TMP_PREFIX/bin" "$ROOT/scripts/install"; then
+  missing=0
+  while IFS= read -r cmd; do
+    if [[ ! -x "$TMP_PREFIX/bin/$cmd" ]]; then
+      echo "missing installed command: $cmd"
+      missing=1
+    else
+      "$TMP_PREFIX/bin/$cmd" --version >/dev/null
+    fi
+  done < <("$PYTHON" - "$ROOT" <<'PY'
+import sys, tomllib
+from pathlib import Path
+root = Path(sys.argv[1])
+with (root / "tools.toml").open("rb") as fh:
+    tools = tomllib.load(fh)["tools"]
+for meta in tools.values():
+    if meta["status"] == "active":
+        print(meta["command"])
+PY
+)
+  if [[ "$missing" -eq 0 ]]; then
+    pass "symlink installation + version smoke"
+  else
+    fail "symlink installation + version smoke"
+  fi
+else
+  fail "installation"
+fi
+
+section "Documentation"
+if "$PYTHON" - "$ROOT" <<'PY'
+import sys, tomllib
+from pathlib import Path
+root = Path(sys.argv[1])
+required_root = [
+    "README.md", "VERSIONING.md", "CONTRIBUTING.md",
+    "docs/architecture.md", "docs/conventions.md",
+    "docs/release-process.md", "docs/tool-lifecycle.md",
+]
+for rel in required_root:
+    if not (root / rel).is_file():
+        print(f"missing {rel}")
+        raise SystemExit(1)
+with (root / "tools.toml").open("rb") as fh:
+    tools = tomllib.load(fh)["tools"]
+for name, meta in tools.items():
+    base = root / meta["path"]
+    for rel in ("README.md", "CHANGELOG.md", "VERSION"):
+        if not (base / rel).is_file():
+            print(f"{name}: missing {rel}")
+            raise SystemExit(1)
+print("Documentation contract complete.")
+PY
+then pass "documentation contract"
+else fail "documentation contract"
+fi
+
+section "No-secret heuristic"
+if "$PYTHON" - "$ROOT" <<'PY'
+import re, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+patterns = [
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+    re.compile(r"\bghp_[A-Za-z0-9]{30,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{40,}\b"),
+]
+bad = []
+for p in root.rglob("*"):
+    if not p.is_file() or ".git" in p.parts:
+        continue
+    if p.suffix.lower() in {".zip", ".png", ".jpg", ".jpeg", ".gif"}:
+        continue
+    try:
+        text = p.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        continue
+    for rx in patterns:
+        if rx.search(text):
+            bad.append(str(p.relative_to(root)))
+if bad:
+    for item in bad:
+        print(f"possible secret: {item}")
+    raise SystemExit(1)
+print("No obvious private keys/tokens detected.")
+PY
+then pass "no-secret heuristic"
+else fail "no-secret heuristic"
+fi
+
+section "Gate result"
+if [[ "$FAIL" -ne 0 ]]; then
+  echo "DUT-TOOLS-RELEASE-GATE: FAIL"
+  exit 1
+fi
+
+echo "DUT-TOOLS-RELEASE-GATE: PASS"

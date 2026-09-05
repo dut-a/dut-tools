@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+import argparse, json, subprocess, tomllib
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[1]
+def git(*args):
+    cp=subprocess.run(['git',*args],cwd=ROOT,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    if cp.returncode: raise SystemExit(cp.stderr.strip() or 'git failed')
+    return cp.stdout
+with (ROOT/'tools.toml').open('rb') as fh: TOOLS=tomllib.load(fh)['tools']
+p=argparse.ArgumentParser(description='Print active dut-tools affected by a Git diff.')
+p.add_argument('--base',required=True); p.add_argument('--head',default='HEAD'); p.add_argument('--format',choices=['lines','json','csv'],default='lines'); a=p.parse_args()
+files=[x for x in git('diff','--name-only',f'{a.base}...{a.head}').splitlines() if x]
+repo_wide=any(f in {'tools.toml','Makefile','README.md','VERSIONING.md','CONTRIBUTING.md','.github/workflows/ci.yml'} or f.startswith(('scripts/','tests/structural/','docs/')) for f in files)
+changed=[]
+for name,meta in sorted(TOOLS.items()):
+    if meta['status']!='active': continue
+    prefix=meta['path'].rstrip('/')+'/'
+    if repo_wide or any(f==meta['entrypoint'] or f.startswith(prefix) for f in files): changed.append(name)
+print(json.dumps(changed) if a.format=='json' else ','.join(changed) if a.format=='csv' else '\n'.join(changed))

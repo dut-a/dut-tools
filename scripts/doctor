@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+failures=0
+warnings=0
+
+ok()   { printf '  ✓ %s\n' "$*"; }
+warn() { printf '  ! %s\n' "$*"; warnings=$((warnings+1)); }
+bad()  { printf '  ✗ %s\n' "$*"; failures=$((failures+1)); }
+
+echo "Dut Tools Doctor"
+echo
+
+echo "Repository"
+[[ -f "$ROOT/tools.toml" ]] && ok "tools.toml exists" || bad "tools.toml missing"
+python3 "$ROOT/scripts/registry.py" validate >/dev/null 2>&1 && ok "registry valid" || bad "registry invalid"
+[[ -d "$ROOT/.git" ]] && ok "Git repository detected" || warn "not currently inside an initialized Git repository"
+
+echo
+echo "Runtime"
+if command -v python3 >/dev/null 2>&1; then
+  version="$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
+  if python3 - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 11) else 1)
+PY
+  then ok "Python $version (>= 3.11)"
+  else bad "Python $version is too old; require >= 3.11"
+  fi
+else
+  bad "python3 not found"
+fi
+
+command -v git >/dev/null 2>&1 && ok "Git available: $(git --version)" || bad "Git not found"
+command -v bash >/dev/null 2>&1 && ok "Bash available" || bad "Bash not found"
+
+echo
+echo "Paths"
+[[ -d "$BIN_DIR" ]] && ok "$BIN_DIR exists" || warn "$BIN_DIR does not exist yet"
+case ":$PATH:" in
+  *":$BIN_DIR:"*) ok "$BIN_DIR is on PATH" ;;
+  *) warn "$BIN_DIR is not on PATH; configure this in dut-dotfiles/shell configuration" ;;
+esac
+[[ -d "$HOME/.config/dut" ]] && ok "$HOME/.config/dut exists" || warn "$HOME/.config/dut does not exist yet"
+
+echo
+echo "Registered tools"
+python3 - "$ROOT" "$BIN_DIR" <<'PY'
+import tomllib, sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+bin_dir = Path(sys.argv[2]).expanduser()
+with (root / "tools.toml").open("rb") as fh:
+    tools = tomllib.load(fh)["tools"]
+
+for name, meta in sorted(tools.items()):
+    target = bin_dir / meta["command"]
+    if meta["status"] == "active":
+        state = "installed" if target.is_symlink() else "not installed"
+    else:
+        state = meta["status"]
+    print(f"  - {name}: {state}")
+PY
+
+echo
+if (( failures > 0 )); then
+  echo "Result: FAIL ($failures failure(s), $warnings warning(s))"
+  exit 1
+fi
+
+echo "Result: PASS ($warnings warning(s))"

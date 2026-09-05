@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+TOOL=""
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/install [--tool NAME]
+
+Install active dut-tools commands as symlinks.
+
+Environment:
+  BIN_DIR   Installation directory (default: ~/.local/bin)
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    --tool) TOOL="${2:?missing tool name}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+mkdir -p "$BIN_DIR"
+
+python3 - "$ROOT" "$BIN_DIR" "$TOOL" <<'PY'
+import json, os, subprocess, sys, tomllib
+from pathlib import Path
+
+root = Path(sys.argv[1])
+bin_dir = Path(sys.argv[2]).expanduser()
+selected = sys.argv[3]
+
+with (root / "tools.toml").open("rb") as fh:
+    registry = tomllib.load(fh)["tools"]
+
+names = [selected] if selected else sorted(registry)
+if selected and selected not in registry:
+    print(f"ERROR: unknown tool {selected!r}", file=sys.stderr)
+    raise SystemExit(2)
+
+installed = 0
+for name in names:
+    meta = registry[name]
+    status = meta["status"]
+    if status != "active":
+        print(f"SKIP {name}: status={status}")
+        continue
+
+    source = root / meta["entrypoint"]
+    target = bin_dir / meta["command"]
+
+    if target.is_symlink() or target.exists():
+        if target.is_symlink() and target.resolve() == source.resolve():
+            print(f"OK   {name}: already installed -> {target}")
+            continue
+        print(f"ERROR: refusing to replace existing {target}", file=sys.stderr)
+        raise SystemExit(1)
+
+    target.symlink_to(source)
+    print(f"LINK {target} -> {source}")
+    installed += 1
+
+print(f"Installed {installed} tool(s).")
+PY

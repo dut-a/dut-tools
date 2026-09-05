@@ -1,0 +1,6 @@
+# Example only. Replace with the real context-zip configuration contract
+# when the authoritative Spring implementation is migrated.
+
+[context]
+include_tests = false
+resources = "smart"

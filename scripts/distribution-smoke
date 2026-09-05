@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import tomllib
+import zipfile
+from pathlib import Path
+
+def executable(path: Path) -> bool:
+    return path.is_file() and bool(path.stat().st_mode & stat.S_IXUSR)
+
+def run(argv, cwd, timeout=180):
+    return subprocess.run(argv, cwd=cwd, text=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          timeout=timeout)
+
+def main() -> int:
+    p = argparse.ArgumentParser(description="Verify a dut-tools ZIP is a usable drop-in distribution.")
+    p.add_argument("archive")
+    p.add_argument("--skip-release-gate", action="store_true",
+                   help="Skip the full release gate; useful only for focused local debugging.")
+    args = p.parse_args()
+
+    archive = Path(args.archive).expanduser().resolve()
+    if not archive.is_file():
+        print(f"ERROR: archive not found: {archive}", file=sys.stderr)
+        return 2
+
+    with tempfile.TemporaryDirectory() as td:
+        temp = Path(td)
+        with zipfile.ZipFile(archive) as zf:
+            bad = zf.testzip()
+            if bad:
+                print(f"ERROR: corrupt ZIP member: {bad}", file=sys.stderr)
+                return 1
+
+        unzip = shutil.which("unzip")
+        if unzip:
+            cp = subprocess.run([unzip, "-q", str(archive), "-d", str(temp)],
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if cp.returncode != 0:
+                print(cp.stderr, file=sys.stderr)
+                print("ERROR: unzip extraction failed", file=sys.stderr)
+                return 1
+        else:
+            # Fallback: Python's zipfile does not restore Unix modes, so apply the
+            # archive's stored POSIX permission bits after extraction.
+            with zipfile.ZipFile(archive) as zf:
+                zf.extractall(temp)
+                for info in zf.infolist():
+                    mode = (info.external_attr >> 16) & 0o777
+                    if not mode or info.is_dir():
+                        continue
+                    extracted = temp / info.filename
+                    if extracted.exists():
+                        extracted.chmod(mode)
+
+        root = temp / "dut-tools"
+        if not root.is_dir():
+            print("ERROR: archive must contain top-level dut-tools/", file=sys.stderr)
+            return 1
+
+        with (root / "tools.toml").open("rb") as fh:
+            tools = tomllib.load(fh)["tools"]
+
+        required = [
+            root / "scripts" / "check",
+            root / "scripts" / "test",
+            root / "scripts" / "release-gate",
+            root / "scripts" / "install",
+        ]
+        required += [
+            root / meta["entrypoint"]
+            for meta in tools.values()
+            if meta.get("status") == "active" and meta.get("entrypoint")
+        ]
+
+        bad_modes = [str(p.relative_to(root)) for p in required if not executable(p)]
+        if bad_modes:
+            print("ERROR: non-executable distribution files:", file=sys.stderr)
+            for rel in bad_modes:
+                print(f"  {rel}", file=sys.stderr)
+            return 1
+
+        cp = run(["./scripts/check"], root, 120)
+        if cp.returncode != 0:
+            print(cp.stdout)
+            print(cp.stderr, file=sys.stderr)
+            print("ERROR: extracted ./scripts/check failed", file=sys.stderr)
+            return 1
+
+        cp = run(["./scripts/test"], root, 240)
+        if cp.returncode != 0:
+            print(cp.stdout)
+            print(cp.stderr, file=sys.stderr)
+            print("ERROR: extracted ./scripts/test failed", file=sys.stderr)
+            return 1
+
+        prefix = temp / "prefix" / "bin"
+        env = os.environ.copy()
+        env["BIN_DIR"] = str(prefix)
+        cp = subprocess.run(["./scripts/install"], cwd=root, env=env,
+                            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if cp.returncode != 0:
+            print(cp.stdout)
+            print(cp.stderr, file=sys.stderr)
+            print("ERROR: extracted install failed", file=sys.stderr)
+            return 1
+
+        for name, meta in tools.items():
+            if meta.get("status") != "active":
+                continue
+            cmd = prefix / meta["command"]
+            if not executable(cmd):
+                print(f"ERROR: installed command not executable: {cmd}", file=sys.stderr)
+                return 1
+            cp = run([str(cmd), "--version"], root, 20)
+            if cp.returncode != 0:
+                print(f"ERROR: installed command failed --version: {name}", file=sys.stderr)
+                return 1
+
+        if not args.skip_release_gate:
+            cp = run(["./scripts/release-gate"], root, 300)
+            if cp.returncode != 0:
+                print(cp.stdout)
+                print(cp.stderr, file=sys.stderr)
+                print("ERROR: extracted release gate failed", file=sys.stderr)
+                return 1
+
+        print("DUT-TOOLS-DISTRIBUTION-SMOKE: PASS")
+        return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())

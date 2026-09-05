@@ -1,0 +1,120 @@
+[repository]
+name = "dut-tools"
+description = "Dut-owned cross-domain utilities monorepo"
+default_bin_dir = "~/.local/bin"
+default_config_dir = "~/.config/dut"
+
+[tools."context-zip"]
+command = "context-zip"
+path = "tools/context-zip"
+language = "python"
+status = "active"
+maintenance = "normal"
+version_file = "tools/context-zip/VERSION"
+entrypoint = "bin/context-zip"
+test_command = "python3 -m unittest discover -s tests -p 'test_*.py' -v"
+description = "Context/project packaging across Spring and PHP projects."
+
+[tools."git-context"]
+command = "git-context"
+path = "tools/git-context"
+language = "python"
+status = "active"
+maintenance = "normal"
+version_file = "tools/git-context/VERSION"
+entrypoint = "bin/git-context"
+test_command = "python3 -m unittest discover -s tests -p 'test_*.py' -v"
+description = "Directory-driven Git identity, account, host-CLI and workspace context management."
+
+[tools."migration-version-fixer"]
+command = "migration-version-fixer"
+path = "tools/migration-version-fixer"
+language = "python"
+status = "active"
+maintenance = "normal"
+version_file = "tools/migration-version-fixer/VERSION"
+entrypoint = "bin/migration-version-fixer"
+test_command = "python3 -m unittest discover -s tests -p 'test_*.py' -v"
+description = "Repository-wide Flyway/Laravel migration version normalization and CI validation."
+
+[tools."release-archive"]
+command = "release-archive"
+path = "tools/release-archive"
+language = "python"
+status = "active"
+maintenance = "normal"
+version_file = "tools/release-archive/VERSION"
+entrypoint = "bin/release-archive"
+test_command = "python3 -m unittest discover -s tests -p 'test_*.py' -v"
+description = "Deterministic Git-aware release archives in ZIP and TAR.GZ formats."
+
+
+[tools."repo-patch"]
+command = "repo-patch"
+path = "tools/repo-patch"
+language = "python"
+status = "active"
+maintenance = "frozen"
+version_file = "tools/repo-patch/VERSION"
+entrypoint = "bin/repo-patch"
+test_command = "python3 -m unittest discover -s tests -p 'test_*.py' -v"
+description = "Plan-first repository patch application with mandatory rollback; Maven/Spring, Gradle, Composer/PHP, and generic adapters."
+
+
+[tools."git-provenance-audit"]
+command = "git-provenance-audit"
+path = "tools/git-provenance-audit"
+language = "python"
+status = "active"
+maintenance = "normal"
+version_file = "tools/git-provenance-audit/VERSION"
+entrypoint = "bin/git-provenance-audit"
+test_command = "python3 -m unittest discover -s tests -p 'test_*.py' -v"
+description = "Read-only Git author/committer provenance audit against directory-driven identity context."
+
+
+[tools."module-name-normalizer"]
+command = "module-name-normalizer"
+path = "tools/module-name-normalizer"
+language = "python"
+status = "active"
+maintenance = "normal"
+version_file = "tools/module-name-normalizer/VERSION"
+entrypoint = "bin/module-name-normalizer"
+test_command = "python3 -m unittest discover -s tests -p 'test_*.py' -v"
+description = "Conservative Maven project/module <name> normalization without touching artifact coordinates."
+
+
+[tools."repo-verify"]
+command = "repo-verify"
+path = "tools/repo-verify"
+language = "python"
+status = "active"
+maintenance = "normal"
+version_file = "tools/repo-verify/VERSION"
+entrypoint = "bin/repo-verify"
+test_command = "python3 -m unittest discover -s tests -p 'test_*.py' -v"
+description = "Declarative repository verification engine with project-owned policy and CI-friendly evidence."
+
+
+[tools."build-diagnostics"]
+command = "build-diagnostics"
+path = "tools/build-diagnostics"
+language = "python"
+status = "active"
+maintenance = "normal"
+version_file = "tools/build-diagnostics/VERSION"
+entrypoint = "bin/build-diagnostics"
+test_command = "python3 -m unittest discover -s tests -p 'test_*.py' -v"
+description = "Generic build-output capture, warning/error classification, and policy-neutral diagnostics reporting."
+
+[tools."release-flow"]
+command = "release-flow"
+path = "tools/release-flow"
+language = "python"
+status = "active"
+maintenance = "normal"
+version_file = "tools/release-flow/VERSION"
+entrypoint = "bin/release-flow"
+test_command = "python3 -m unittest discover -s tests -p 'test_*.py' -v"
+description = "Generic prepare/verify/next-development release workflow with repository-owned policy."

@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import os
+import shlex
+import subprocess
+import sys
+import tomllib
+from dataclasses import dataclass
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+@dataclass
+class TestResult:
+    name: str
+    argv: list[str]
+    returncode: int
+    stdout: str
+    stderr: str
+    error: str | None = None
+
+
+def load_tools():
+    with (ROOT / "tools.toml").open("rb") as fh:
+        return tomllib.load(fh)["tools"]
+
+
+def command_argv(value):
+    if isinstance(value, list):
+        if not value or not all(isinstance(x, str) and x for x in value):
+            raise ValueError("test_command array must contain non-empty strings")
+        return list(value)
+    if isinstance(value, str) and value.strip():
+        return shlex.split(value)
+    raise ValueError("test_command must be a non-empty string or string array")
+
+
+def execute(name, meta):
+    raw = meta.get("test_command")
+    if not raw:
+        return TestResult(name, [], 1, "", "", "active tool has no test_command")
+    try:
+        argv = command_argv(raw)
+    except ValueError as e:
+        return TestResult(name, [], 1, "", "", str(e))
+    try:
+        cp = subprocess.run(argv, cwd=ROOT / meta["path"], text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return TestResult(name, argv, cp.returncode, cp.stdout, cp.stderr)
+    except OSError as e:
+        return TestResult(name, argv, 1, "", "", str(e))
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description="Run dut-tools implementation tests.")
+    p.add_argument("--tool", action="append", default=[],
+                   help="Tool name to test; repeatable. Omit to test every active tool.")
+    p.add_argument("--jobs", type=int, default=min(4, max(1, os.cpu_count() or 1)),
+                   help="Parallel tool suites when testing multiple tools (default: up to 4).")
+    args = p.parse_args()
+    if args.jobs < 1:
+        print("ERROR: --jobs must be >= 1", file=sys.stderr)
+        return 2
+
+    tools = load_tools()
+    requested = args.tool or [name for name, meta in sorted(tools.items()) if meta.get("status") == "active"]
+    unknown = [name for name in requested if name not in tools]
+    if unknown:
+        print(f"ERROR: unknown tool(s): {', '.join(unknown)}", file=sys.stderr)
+        return 2
+
+    selected = [(name, tools[name]) for name in requested if tools[name].get("status") == "active"]
+    workers = min(args.jobs, max(1, len(selected)))
+
+    if workers == 1:
+        results = [execute(name, meta) for name, meta in selected]
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(execute, name, meta): name for name, meta in selected}
+            by_name = {future.result().name: future.result() for future in futures}
+        results = [by_name[name] for name, _ in selected]
+
+    failures = 0
+    for result in results:
+        print(f"\n== {result.name} ==")
+        if result.argv:
+            print("+ " + " ".join(shlex.quote(x) for x in result.argv))
+        if result.stdout:
+            sys.stdout.write(result.stdout)
+            if not result.stdout.endswith("\n"):
+                print()
+        if result.stderr:
+            sys.stderr.write(result.stderr)
+            if not result.stderr.endswith("\n"):
+                print(file=sys.stderr)
+        if result.error:
+            print(f"FAIL {result.name}: {result.error}")
+            failures += 1
+        elif result.returncode != 0:
+            print(f"FAIL {result.name}: exit {result.returncode}")
+            failures += 1
+        else:
+            print(f"PASS {result.name}")
+
+    return 1 if failures else 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())

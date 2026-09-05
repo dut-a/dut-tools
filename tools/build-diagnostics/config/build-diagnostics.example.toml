@@ -1,0 +1,17 @@
+version = 1
+
+[[classifier]]
+name = "deprecation"
+severity = "warning"
+regex = '(?i)deprecated'
+
+[budget]
+max_warnings = 25
+max_errors = 0
+
+[budget.category]
+deprecation = 5
+
+[[forbidden]]
+name = "illegal-reflection"
+regex = '(?i)illegal reflective access'

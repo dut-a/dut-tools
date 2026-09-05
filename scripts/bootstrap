@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+TOOL=""
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/bootstrap [--tool NAME]
+
+Prepare local dut-tools directories, install active tools, then run doctor.
+This command does not install Homebrew packages or modify shell startup files.
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    --tool) TOOL="${2:?missing tool name}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+mkdir -p "$BIN_DIR"
+mkdir -p "$HOME/.config/dut"
+
+args=()
+[[ -n "$TOOL" ]] && args+=(--tool "$TOOL")
+BIN_DIR="$BIN_DIR" "$ROOT/scripts/install" "${args[@]}"
+BIN_DIR="$BIN_DIR" "$ROOT/scripts/doctor"

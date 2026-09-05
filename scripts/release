@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+def run(argv, check=False):
+    cp = subprocess.run(argv, cwd=ROOT, text=True,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if check and cp.returncode != 0:
+        raise RuntimeError(cp.stderr.strip() or cp.stdout.strip() or f"{argv[0]} failed")
+    return cp
+
+def load_tools():
+    with (ROOT / "tools.toml").open("rb") as fh:
+        return tomllib.load(fh)["tools"]
+
+def main() -> int:
+    p = argparse.ArgumentParser(description="Release one dut-tools command.")
+    p.add_argument("--tool", required=True)
+    p.add_argument("--version", required=True)
+    p.add_argument("--apply", action="store_true",
+                   help="Commit and tag. Without this flag, only validate/plan.")
+    args = p.parse_args()
+
+    tools = load_tools()
+    if args.tool not in tools:
+        print(f"ERROR: unknown tool {args.tool!r}", file=sys.stderr)
+        return 2
+    meta = tools[args.tool]
+    if meta.get("status") != "active":
+        print(f"ERROR: tool is not active: {args.tool}", file=sys.stderr)
+        return 2
+
+    status = run(["git", "status", "--porcelain"])
+    if status.returncode != 0:
+        print(status.stderr, file=sys.stderr)
+        return 2
+    if status.stdout.strip():
+        print("ERROR: repository must be clean before release", file=sys.stderr)
+        return 2
+
+    version_file = ROOT / meta["version_file"]
+    old_version = version_file.read_text(encoding="utf-8")
+    new_version = args.version.strip() + "\n"
+    tag = f"{args.tool}/v{args.version.strip()}"
+
+    # Tag must not already exist.
+    cp = run(["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}"])
+    if cp.returncode == 0:
+        print(f"ERROR: tag already exists: {tag}", file=sys.stderr)
+        return 2
+
+    version_file.write_text(new_version, encoding="utf-8")
+    try:
+        gate = subprocess.run(["./scripts/release-gate"], cwd=ROOT)
+        if gate.returncode != 0:
+            raise RuntimeError("release gate failed")
+
+        tag_check = subprocess.run(
+            ["python3", "scripts/validate-release-tag", tag],
+            cwd=ROOT,
+        )
+        if tag_check.returncode != 0:
+            raise RuntimeError("release tag validation failed")
+
+        if not args.apply:
+            print(f"PLAN release {tag}")
+            return 0
+
+        subprocess.run(["git", "add", meta["version_file"],
+                        f"{meta['path']}/CHANGELOG.md"], cwd=ROOT, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", f"release: {tag}"],
+            cwd=ROOT, check=True
+        )
+        subprocess.run(["git", "tag", "-a", tag, "-m", tag], cwd=ROOT, check=True)
+        print(f"RELEASED {tag}")
+        return 0
+
+    except Exception as e:
+        version_file.write_text(old_version, encoding="utf-8")
+        print(f"ERROR: {e}; VERSION restored", file=sys.stderr)
+        return 1
+    finally:
+        if not args.apply:
+            # Dry-run must leave the repository exactly as it started.
+            version_file.write_text(old_version, encoding="utf-8")
+
+if __name__ == "__main__":
+    raise SystemExit(main())
