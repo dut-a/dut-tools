@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "gate": "DEPLOY-PACK-FREEZE-01",
+  "releaseVersion": "1.9.1",
+  "status": "PASS",
+  "executionMode": "four-batch isolated unittest execution",
+  "testFiles": 31,
+  "tests": 117,
+  "batches": [
+    {"batch":1,"tests":28,"status":"PASS"},
+    {"batch":2,"tests":45,"status":"PASS"},
+    {"batch":3,"tests":25,"status":"PASS"},
+    {"batch":4,"tests":19,"status":"PASS"}
+  ],
+  "additionalChecks": {
+    "pythonCompileall": "PASS",
+    "cliVersion": "deploy-pack 1.9.1",
+    "phpRemoteVerifierSyntax": "PASS",
+    "phpBrowserVerifierSyntax": "PASS",
+    "phpSignedVerifierSyntax": "PASS",
+    "pythonRemoteVerifierSyntax": "PASS",
+    "pythonSignedVerifierSyntax": "PASS"
+  },
+  "notes": [
+    "A monolithic unittest discovery run exceeds the execution ceiling in this environment.",
+    "All 31 test modules were therefore executed to completion across four isolated batches.",
+    "The batched run exposed and corrected one stale pre-HARDEN-18 test fixture that attempted to persist a revoked signer as active."
+  ]
+}

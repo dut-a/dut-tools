@@ -15,3 +15,7 @@ tmp/
 .env
 .env.*
 !.env.example
+
+# Python package build/install metadata
+*.egg-info/
+.venv/

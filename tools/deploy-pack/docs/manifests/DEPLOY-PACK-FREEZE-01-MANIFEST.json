@@ -1,0 +1,51 @@
+{
+  "architectureClosedThrough": [
+    "DEPLOY-PACK-12",
+    "DEPLOY-PACK-HARDEN-13",
+    "DEPLOY-PACK-HARDEN-14",
+    "DEPLOY-PACK-HARDEN-15",
+    "DEPLOY-PACK-HARDEN-16",
+    "DEPLOY-PACK-HARDEN-17",
+    "DEPLOY-PACK-HARDEN-18",
+    "DEPLOY-PACK-ASSURANCE-01"
+  ],
+  "architectureExpansionAllowed": false,
+  "compatibilityBaseline": "1.9.1",
+  "dependencyPolicy": {
+    "build": [
+      "setuptools>=82,<83"
+    ],
+    "runtime": [
+      "cryptography>=46,<47"
+    ],
+    "testedConstraints": "constraints-freeze.txt"
+  },
+  "freezeCleanup": [
+    "removed duplicate shadowed verifier generators",
+    "removed browser query-string token authentication by default",
+    "bounded runtime/build dependency major versions",
+    "added deterministic isolated-batch freeze gate"
+  ],
+  "freezeDate": "2026-09-05",
+  "freezeGate": "python3 scripts/check-freeze.py",
+  "gate": "DEPLOY-PACK-FREEZE-01",
+  "intendedGitTag": "deploy-pack-v1.9.1-freeze",
+  "postFreezeChangePolicy": [
+    "defect-fix",
+    "security-maintenance",
+    "compatibility-maintenance",
+    "dependency-maintenance",
+    "demonstrated-operational-requirement"
+  ],
+  "releaseVersion": "1.9.1",
+  "releaseWheel": {
+    "path": "dist/deploy_pack-1.9.1-py3-none-any.whl",
+    "sha256": "6ded600208b279c707e3cdb30e7e590dcebd06739babba17965779118df08ec9"
+  },
+  "schemaVersion": 1,
+  "securityDisposition": "freeze-ready",
+  "status": "FROZEN",
+  "testEvidence": "docs/manifests/DEPLOY-PACK-FREEZE-01-TEST-EVIDENCE.json",
+  "testFilesPassed": 31,
+  "testsPassed": 117
+}

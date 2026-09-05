@@ -1,0 +1,3 @@
+[deploy-pack]
+ignore = ["storage/**", "var/cache/**"]
+include = ["scripts/production/**"]

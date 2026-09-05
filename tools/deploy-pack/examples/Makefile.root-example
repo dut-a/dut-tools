@@ -1,0 +1,11 @@
+.PHONY: help check-build-toolchain
+
+-include mk/deploy-pack.inc
+
+help:
+	@printf '%s\n' \
+	  'Available targets:' \
+	  '  deploy-status-check  Verify deploy-pack deployment state for CI/Make'
+
+check-build-toolchain:
+	@./scripts/check-deploy-status-target.sh

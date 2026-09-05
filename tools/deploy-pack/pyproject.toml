@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=82,<83"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deploy-pack"
+version = "1.9.1"
+description = "Package deployable Git changes for structure-preserving shared-hosting uploads."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["cryptography>=46,<47"]
+
+[project.scripts]
+deploy-pack = "deploy_pack.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

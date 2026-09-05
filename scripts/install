@@ -53,6 +53,15 @@ for name in names:
     source = root / meta["entrypoint"]
     target = bin_dir / meta["command"]
 
+    install_hook = meta.get("install_hook")
+    if install_hook:
+        hook = root / install_hook
+        if not hook.is_file():
+            print(f"ERROR: {name}: install hook missing: {install_hook}", file=sys.stderr)
+            raise SystemExit(1)
+        print(f"SETUP {name}: {install_hook}")
+        subprocess.run([str(hook)], cwd=root, check=True)
+
     if target.is_symlink() or target.exists():
         if target.is_symlink() and target.resolve() == source.resolve():
             print(f"OK   {name}: already installed -> {target}")

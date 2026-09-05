@@ -65,6 +65,14 @@ def validate() -> list[str]:
             if not candidate.is_file():
                 errors.append(f"{name}: missing {candidate.relative_to(ROOT)}")
 
+        install_hook = meta.get("install_hook")
+        if install_hook:
+            hook = ROOT / install_hook
+            if not hook.is_file():
+                errors.append(f"{name}: missing install hook {install_hook}")
+            elif not hook.stat().st_mode & 0o111:
+                errors.append(f"{name}: install hook {install_hook} is not executable")
+
         if status == "active":
             entrypoint = meta.get("entrypoint")
             if not entrypoint:

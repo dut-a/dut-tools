@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+VENV_PYTHON="$ROOT/tools/deploy-pack/.venv/bin/python"
+if [[ ! -x "$VENV_PYTHON" ]]; then
+  cat >&2 <<EOF
+ERROR: deploy-pack runtime is not provisioned.
+Run:
+  make -C "$ROOT" install TOOL=deploy-pack
+EOF
+  exit 1
+fi
+export PYTHONPATH="$ROOT/tools/deploy-pack/src${PYTHONPATH:+:$PYTHONPATH}"
+exec "$VENV_PYTHON" -m deploy_pack.cli "$@"
