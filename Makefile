@@ -43,6 +43,8 @@ help: ## Show this help
 	@printf "  make install\n"
 	@printf "  make install TOOL=git-context\n"
 	@printf "  make test TOOL=context-zip\n"
+	@printf "  make test VERBOSE=1\n"
+	@printf "  make test QUIET=1\n"
 	@printf "  make release TOOL=git-context VERSION=1.5.0\n"
 	@printf "  make release TOOL=git-context VERSION=1.5.0 APPLY=1\n"
 
@@ -70,7 +72,7 @@ doctor:
 	@BIN_DIR="$(BIN_DIR)" ./scripts/doctor
 
 test:
-	@./scripts/test $(if $(TOOL),--tool "$(TOOL)",)
+	@VERBOSE="$(VERBOSE)" QUIET="$(QUIET)" ./scripts/test $(if $(TOOL),--tool "$(TOOL)",)
 
 lint:
 	@./scripts/lint
