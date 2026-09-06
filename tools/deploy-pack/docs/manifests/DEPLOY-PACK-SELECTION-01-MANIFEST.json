@@ -1,0 +1,20 @@
+{
+  "increment": "DEPLOY-PACK-SELECTION-01",
+  "version": "1.11.0",
+  "scope": "git-aware deployment selection",
+  "artifactModeChanged": false,
+  "selectionMode": "allowlist-first",
+  "newCommand": "deploy-pack init",
+  "configSchema": 2,
+  "hardDenied": [
+    "deploy-pack control/state artifacts",
+    ".env/.env.*",
+    "Git internals",
+    "conventional tests and snapshots"
+  ],
+  "compatibility": {
+    "legacyDeployPackIgnoreIncludeReadable": true,
+    "internalBuildPlanFixtureFallback": "legacy-denylist",
+    "operatorCliRequiresPolicy": true
+  }
+}

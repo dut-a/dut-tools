@@ -1,231 +1,126 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-
-import argparse
-import concurrent.futures
-import os
-import re
-import shlex
-import subprocess
-import sys
-import tomllib
-from dataclasses import dataclass
+import argparse, concurrent.futures, os, re, shlex, subprocess, sys, tomllib
+from dataclasses import dataclass, field
 from pathlib import Path
-
 ROOT = Path(__file__).resolve().parents[1]
 UNITTEST_SUMMARY = re.compile(r"Ran\s+(\d+)\s+tests?\s+in\s+([0-9.]+)s")
-
-
+UNITTEST_CASE = re.compile(r"^(?P<name>test\S+)\s+\((?P<context>[^)]+)\)\s+\.\.\.\s+(?P<status>ok|FAIL|ERROR|expected failure|unexpected success|skipped\s+.+)$")
+@dataclass
+class CaseResult:
+    name: str; context: str; status: str
+    @property
+    def class_name(self):
+        parts = self.context.split(".")
+        return parts[-2] if len(parts) >= 2 else self.context
 @dataclass
 class TestResult:
-    name: str
-    argv: list[str]
-    returncode: int
-    stdout: str
-    stderr: str
-    error: str | None = None
-    test_count: int | None = None
-    duration_seconds: float | None = None
-
-
+    name: str; argv: list[str]; returncode: int; stdout: str; stderr: str
+    error: str | None = None; test_count: int | None = None; duration_seconds: float | None = None
+    cases: list[CaseResult] = field(default_factory=list)
 class Console:
-    def __init__(self) -> None:
-        self.color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
-
-    def _wrap(self, code: str, text: str) -> str:
-        return f"\033[{code}m{text}\033[0m" if self.color else text
-
-    def heading(self, text: str) -> str:
-        return self._wrap("1", text)
-
-    def success(self, text: str) -> str:
-        return self._wrap("32", text)
-
-    def failure(self, text: str) -> str:
-        return self._wrap("31", text)
-
-    def dim(self, text: str) -> str:
-        return self._wrap("2", text)
-
-
+    def __init__(self): self.color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+    def _wrap(self, code, text): return f"\033[{code}m{text}\033[0m" if self.color else text
+    def heading(self, text): return self._wrap("1", text)
+    def success(self, text): return self._wrap("32", text)
+    def failure(self, text): return self._wrap("31", text)
+    def warning(self, text): return self._wrap("33", text)
+    def dim(self, text): return self._wrap("2", text)
 def load_tools():
-    with (ROOT / "tools.toml").open("rb") as fh:
-        return tomllib.load(fh)["tools"]
-
-
+    with (ROOT / "tools.toml").open("rb") as fh: return tomllib.load(fh)["tools"]
 def command_argv(value):
     if isinstance(value, list):
-        if not value or not all(isinstance(x, str) and x for x in value):
-            raise ValueError("test_command array must contain non-empty strings")
+        if not value or not all(isinstance(x, str) and x for x in value): raise ValueError("test_command array must contain non-empty strings")
         return list(value)
-    if isinstance(value, str) and value.strip():
-        return shlex.split(value)
+    if isinstance(value, str) and value.strip(): return shlex.split(value)
     raise ValueError("test_command must be a non-empty string or string array")
-
-
-def parse_unittest_summary(stdout: str, stderr: str) -> tuple[int | None, float | None]:
+def parse_unittest_summary(stdout, stderr):
     match = None
-    for match in UNITTEST_SUMMARY.finditer(stdout + "\n" + stderr):
-        pass
-    if match is None:
-        return None, None
-    return int(match.group(1)), float(match.group(2))
-
-
+    for match in UNITTEST_SUMMARY.finditer(stdout + "\n" + stderr): pass
+    return (None, None) if match is None else (int(match.group(1)), float(match.group(2)))
+def parse_unittest_cases(stdout, stderr):
+    cases = []
+    for line in (stdout + "\n" + stderr).splitlines():
+        m = UNITTEST_CASE.match(line.strip())
+        if m: cases.append(CaseResult(**m.groupdict()))
+    return cases
 def execute(name, meta):
     raw = meta.get("test_command")
-    if not raw:
-        return TestResult(name, [], 1, "", "", "active tool has no test_command")
+    if not raw: return TestResult(name, [], 1, "", "", "active tool has no test_command")
+    try: argv = command_argv(raw)
+    except ValueError as e: return TestResult(name, [], 1, "", "", str(e))
     try:
-        argv = command_argv(raw)
-    except ValueError as e:
-        return TestResult(name, [], 1, "", "", str(e))
-    try:
-        env = os.environ.copy()
-        env.setdefault("GIT_PAGER", "cat")
-        env.setdefault("PAGER", "cat")
-        cp = subprocess.run(
-            argv,
-            cwd=ROOT / meta["path"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
+        env = os.environ.copy(); env.setdefault("GIT_PAGER", "cat"); env.setdefault("PAGER", "cat")
+        cp = subprocess.run(argv, cwd=ROOT / meta["path"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         count, duration = parse_unittest_summary(cp.stdout, cp.stderr)
-        return TestResult(name, argv, cp.returncode, cp.stdout, cp.stderr,
-                          test_count=count, duration_seconds=duration)
-    except OSError as e:
-        return TestResult(name, argv, 1, "", "", str(e))
-
-
-def write_captured(result: TestResult) -> None:
+        return TestResult(name, argv, cp.returncode, cp.stdout, cp.stderr, test_count=count, duration_seconds=duration, cases=parse_unittest_cases(cp.stdout, cp.stderr))
+    except OSError as e: return TestResult(name, argv, 1, "", "", str(e))
+def write_captured(result):
     if result.stdout:
         sys.stdout.write(result.stdout)
-        if not result.stdout.endswith("\n"):
-            print()
+        if not result.stdout.endswith("\n"): print()
     if result.stderr:
         sys.stderr.write(result.stderr)
-        if not result.stderr.endswith("\n"):
-            print(file=sys.stderr)
-
-
-def compact_success(result: TestResult) -> str:
-    if result.test_count is None:
-        return "✓ tests passed"
+        if not result.stderr.endswith("\n"): print(file=sys.stderr)
+def compact_success(result):
+    if result.test_count is None: return "✓ tests passed"
     noun = "test" if result.test_count == 1 else "tests"
-    if result.duration_seconds is None:
-        return f"✓ {result.test_count} {noun} passed"
-    return f"✓ {result.test_count} {noun} passed in {result.duration_seconds:.2f}s"
-
-
-def render_result(result: TestResult, *, verbose: bool, quiet: bool, console: Console) -> bool:
+    return f"✓ {result.test_count} {noun} passed" if result.duration_seconds is None else f"✓ {result.test_count} {noun} passed in {result.duration_seconds:.2f}s"
+def render_case(case, console):
+    context = console.dim(f" [{case.class_name}]")
+    if case.status == "ok": return console.success(f"✓ {case.name}") + context
+    if case.status.startswith("skipped"):
+        reason = case.status[len("skipped"):].strip()
+        return console.warning(f"→ {case.name} skipped") + (console.dim(f" {reason}") if reason else "") + context
+    if case.status == "expected failure": return console.warning(f"⚠ {case.name} expected failure") + context
+    if case.status == "unexpected success": return console.failure(f"✗ {case.name} unexpected success") + context
+    return console.failure(f"✗ {case.name} {case.status}") + context
+def render_result(result, *, verbose, quiet, console):
     failed = result.error is not None or result.returncode != 0
-
     if quiet:
-        if failed:
-            detail = result.error or f"exit {result.returncode}"
-            print(console.failure(f"✗ {result.name} — {detail}"))
-        else:
-            print(console.success(f"✓ {result.name}"))
-        return failed
-
+        print(console.failure(f"✗ {result.name} — {result.error or f'exit {result.returncode}'}") if failed else console.success(f"✓ {result.name}")); return failed
     print(f"\n{console.heading(f'== {result.name} ==')}")
-
     if verbose:
-        if result.argv:
-            print(console.dim("+ " + " ".join(shlex.quote(x) for x in result.argv)))
+        if result.argv: print(console.dim("+ " + " ".join(shlex.quote(x) for x in result.argv)))
         write_captured(result)
-        if failed:
-            detail = result.error or f"exit {result.returncode}"
-            print(console.failure(f"✗ FAIL — {detail}"))
-        else:
-            print(console.success(compact_success(result)))
-        return failed
-
+        print(console.failure(f"✗ FAIL — {result.error or f'exit {result.returncode}'}") if failed else console.success(compact_success(result))); return failed
     if failed:
-        detail = result.error or f"exit {result.returncode}"
-        print(console.failure(f"✗ tests failed — {detail}"))
-        if result.argv:
-            print(console.dim("+ " + " ".join(shlex.quote(x) for x in result.argv)))
-        print()
-        write_captured(result)
+        print(console.failure(f"✗ tests failed — {result.error or f'exit {result.returncode}'}"))
+        if result.argv: print(console.dim("+ " + " ".join(shlex.quote(x) for x in result.argv)))
+        print(); write_captured(result)
     else:
+        if result.cases:
+            for case in result.cases: print(render_case(case, console))
+            print(console.dim("─" * 56))
         print(console.success(compact_success(result)))
     return failed
-
-
-def env_enabled(name: str) -> bool:
-    value = os.environ.get(name, "").strip().lower()
-    return value in {"1", "true", "yes", "on"}
-
-
-def main() -> int:
+def env_enabled(name): return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+def main():
     p = argparse.ArgumentParser(description="Run dut-tools implementation tests.")
-    p.add_argument("--tool", action="append", default=[],
-                   help="Tool name to test; repeatable. Omit to test every active tool.")
-    p.add_argument("--jobs", type=int, default=min(4, max(1, os.cpu_count() or 1)),
-                   help="Parallel tool suites when testing multiple tools (default: up to 4).")
-    modes = p.add_mutually_exclusive_group()
-    modes.add_argument("--verbose", action="store_true",
-                       help="Show commands and complete output for every tool suite.")
-    modes.add_argument("--quiet", action="store_true",
-                       help="Show only one PASS/FAIL line per tool suite.")
-    args = p.parse_args()
-
-    verbose = args.verbose or env_enabled("VERBOSE")
-    quiet = args.quiet or env_enabled("QUIET")
-    if verbose and quiet:
-        print("ERROR: VERBOSE and QUIET modes are mutually exclusive", file=sys.stderr)
-        return 2
-    if args.jobs < 1:
-        print("ERROR: --jobs must be >= 1", file=sys.stderr)
-        return 2
-
-    tools = load_tools()
-    requested = args.tool or [name for name, meta in sorted(tools.items()) if meta.get("status") == "active"]
+    p.add_argument("--tool", action="append", default=[], help="Tool name to test; repeatable. Omit to test every active tool.")
+    p.add_argument("--jobs", type=int, default=min(4, max(1, os.cpu_count() or 1)), help="Parallel tool suites when testing multiple tools (default: up to 4).")
+    modes = p.add_mutually_exclusive_group(); modes.add_argument("--verbose", action="store_true", help="Show commands and complete framework output for every tool suite."); modes.add_argument("--quiet", action="store_true", help="Show only one PASS/FAIL line per tool suite.")
+    args = p.parse_args(); verbose = args.verbose or env_enabled("VERBOSE"); quiet = args.quiet or env_enabled("QUIET")
+    if verbose and quiet: print("ERROR: VERBOSE and QUIET modes are mutually exclusive", file=sys.stderr); return 2
+    if args.jobs < 1: print("ERROR: --jobs must be >= 1", file=sys.stderr); return 2
+    tools = load_tools(); requested = args.tool or [name for name, meta in sorted(tools.items()) if meta.get("status") == "active"]
     unknown = [name for name in requested if name not in tools]
-    if unknown:
-        print(f"ERROR: unknown tool(s): {', '.join(unknown)}", file=sys.stderr)
-        return 2
-
-    selected = [(name, tools[name]) for name in requested if tools[name].get("status") == "active"]
-    workers = min(args.jobs, max(1, len(selected)))
-
-    if workers == 1:
-        results = [execute(name, meta) for name, meta in selected]
+    if unknown: print(f"ERROR: unknown tool(s): {', '.join(unknown)}", file=sys.stderr); return 2
+    selected = [(name, tools[name]) for name in requested if tools[name].get("status") == "active"]; workers = min(args.jobs, max(1, len(selected)))
+    if workers == 1: results = [execute(name, meta) for name, meta in selected]
     else:
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(execute, name, meta): name for name, meta in selected}
-            by_name = {}
+            futures = {pool.submit(execute, name, meta): name for name, meta in selected}; by_name = {}
             for future in concurrent.futures.as_completed(futures):
-                result = future.result()
-                by_name[result.name] = result
+                result = future.result(); by_name[result.name] = result
         results = [by_name[name] for name, _ in selected]
-
-    console = Console()
-    failures = sum(render_result(result, verbose=verbose, quiet=quiet, console=console) for result in results)
-
+    console = Console(); failures = sum(render_result(r, verbose=verbose, quiet=quiet, console=console) for r in results)
     if not quiet:
-        total_known = sum(result.test_count or 0 for result in results)
-        all_counts_known = all(result.test_count is not None for result in results)
-        print()
-        if failures:
-            noun = "suite" if failures == 1 else "suites"
-            print(console.failure(f"✗ {failures} tool {noun} failed"))
+        total_known = sum(r.test_count or 0 for r in results); all_counts_known = all(r.test_count is not None for r in results); total_duration = sum(r.duration_seconds or 0.0 for r in results); print()
+        if failures: print(console.failure(f"✗ {failures} tool {'suite' if failures == 1 else 'suites'} failed"))
         else:
-            suites = len(results)
-            suite_noun = "suite" if suites == 1 else "suites"
-            if all_counts_known and results:
-                test_noun = "test" if total_known == 1 else "tests"
-                print(console.success(
-                    f"✓ All {suites} tool {suite_noun} passed ({total_known} {test_noun})"
-                ))
-            else:
-                print(console.success(f"✓ All {suites} tool {suite_noun} passed"))
-
+            suites = len(results); suite_noun = "suite" if suites == 1 else "suites"
+            if all_counts_known and results: print(console.success(f"✓ All {suites} tool {suite_noun} passed ({total_known} {'test' if total_known == 1 else 'tests'}, {total_duration:.2f}s cumulative)"))
+            else: print(console.success(f"✓ All {suites} tool {suite_noun} passed"))
     return 1 if failures else 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+if __name__ == "__main__": raise SystemExit(main())

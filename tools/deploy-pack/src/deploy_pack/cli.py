@@ -10,10 +10,11 @@ from . import __version__
 from .signed import write_signed_remote_verifier, ingest_signed_remote_evidence
 from .lifecycle import issue as issue_verifier, get as get_verifier, revoke as revoke_verifier, validate as validate_verifier, assert_usable as assert_signed_evidence_usable, consume as consume_signed_evidence
 from .keyring import load as load_keyring, register as register_signer, revoke as revoke_signer, export_bundle as export_recovery_bundle, import_bundle as import_recovery_bundle, verify_bundle as verify_recovery_bundle, trust_recovery_signer, revoke_recovery_signer, load_recovery_trust, verify_bundle_trusted as verify_recovery_bundle_trusted, import_bundle_trusted as import_recovery_bundle_trusted, export_offline_trust_anchor, verify_offline_trust_anchor, export_offline_trust_copies, verify_offline_trust_copy_set, verify_offline_trust_quorum, load_offline_checkpoints, verify_offline_checkpoint_history, offline_checkpoint_record
-from .state import repository_lock, begin_mark_transaction, commit_mark_transaction, recover_mark_transaction
+from .state import repository_lock, begin_mark_transaction, commit_mark_transaction, recover_mark_transaction, atomic_write_text
 from .assurance import taxonomy as assurance_taxonomy, ASSURANCE_LEVELS
+from .artifact import build_artifact_plan, write_artifact, result_dict as artifact_result_dict
 from .core import (
-    BASELINE_FILE, DeployPackError, build_plan, read_baseline, repo_root, resolve_ref,
+    BASELINE_FILE, CONFIG_FILE, DeployPackError, build_plan, load_project_policy, read_baseline, repo_root, resolve_ref,
     verify_archive, verify_extracted_tree, write_baseline, write_package,
     write_remote_verifier, write_verification_evidence, validate_mark_evidence, ingest_remote_evidence,
     append_deployment_history, read_deployment_history, verify_deployment_history,
@@ -24,26 +25,165 @@ from .core import (
     deployment_status,
 )
 
-def parser():
-    p = argparse.ArgumentParser(prog="deploy-pack", description="Package and verify Git-based production deployments.")
-    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    sub = p.add_subparsers(dest="command")
+DEPLOY_PACK_DESCRIPTION = """Production deployment packaging, verification, and deployment-state governance.
 
-    pack = sub.add_parser("pack")
-    pack.add_argument("baseline", nargs="?")
+Supports two deliberately distinct packaging workflows:
+  • Git-aware change-set packaging from a repository deployment baseline.
+  • Git-independent packaging of an already-built deployment artifact directory.
+"""
+
+DEPLOY_PACK_HELP_EPILOG = """COMMAND GROUPS
+  Packaging
+    init                      Create a conservative deployment allowlist config.
+    pack                      Package a Git-selected deployment change set.
+    artifact                  Package an already-built deployment directory.
+    inspect                   Preview Git-selected deployable/excluded files.
+
+  Deployment state
+    baseline                  Show the recorded production baseline.
+    mark                      Record a verified deployment as deployed.
+    deploy status             Report deployment/recovery health.
+
+  Verification
+    verify                    Verify an archive or extracted deployment tree.
+    remote-verifier           Generate a temporary remote verifier.
+    ingest-remote-evidence    Bind unsigned remote verification evidence.
+    ingest-signed-remote-evidence
+                              Bind signed remote verification evidence.
+
+  History and rollback
+    history                   Show deployment ledger records.
+    history-verify            Verify deployment-ledger integrity.
+    rollback plan             Prepare a rollback package.
+    rollback diff             Report a rollback delta without packaging.
+
+  Trust and recovery
+    assurance                 Explain evidence-assurance semantics.
+    verifier                  Manage verifier identities.
+    keys                      Inspect/revoke evidence signing keys.
+    recovery                  Recovery bundles, trust anchors, and custody.
+
+EXAMPLES
+  deploy-pack artifact --source dist --format zip --output site-deploy.zip
+  deploy-pack artifact --source build/shared-hosting --format tar.gz --output deploy.tar.gz
+  deploy-pack pack --output deploy.zip
+  deploy-pack deploy status
+  deploy-pack history --limit 10
+
+Run `deploy-pack <command> --help` for command-specific options and examples.
+"""
+
+ARTIFACT_HELP = """Package an already-built deployment-ready directory without consulting Git.
+
+The source directory is authoritative. Its contents are placed directly at archive root;
+the source directory name itself is never added as a prefix. Git-oriented production
+exclusions are not applied. Canonical-path and symlink-containment safety rules remain enforced.
+"""
+
+ARTIFACT_EPILOG = """EXAMPLES
+  Static-site build:
+    deploy-pack artifact --source dist --format zip --output site-deploy.zip
+
+  Shared-hosting build with required-path assertions:
+    deploy-pack artifact --source build/shared-hosting --format zip --output deploy.zip --require index.html --require .htaccess
+
+  TAR.GZ:
+    deploy-pack artifact --source dist --format tar.gz --output site-deploy.tar.gz
+
+SAFETY
+  • --source must exist and be a directory.
+  • Archive members are clean artifact-root-relative POSIX paths.
+  • Output inside --source is rejected to prevent archive self-inclusion.
+  • Symlinks that escape the artifact root are rejected.
+  • --require is repeatable and validated before archive creation.
+  • Artifact mode does not consult Git state.
+"""
+
+
+PACK_HELP = """Package Git changes only when they are inside the repository's declared deployment surface.
+
+Git answers "what changed?". `.deploy-pack.toml` answers "what may deploy?".
+New repositories fail closed until `deploy-pack init` creates a policy and the
+operator reviews its explicit [pack].include allowlist.
+
+In allowlist mode, --include is a narrowing filter; it cannot expand the project allowlist.
+"""
+
+PACK_EPILOG = """SELECTION
+  Hard denied even if allowlisted:
+    deploy-pack control/state artifacts, .env/.env.*, Git internals, conventional tests/snapshots.
+
+  Require explicit [pack].include:
+    application files, scripts, package/build metadata, hidden paths other than ordinary .htaccess.
+
+EXAMPLES
+  Initialize a repository policy:
+    deploy-pack init
+
+  Review selection before packaging:
+    deploy-pack inspect HEAD~1
+
+  Package from the recorded deployment baseline:
+    deploy-pack pack --output deploy.zip
+"""
+
+def parser():
+    p = argparse.ArgumentParser(
+        prog="deploy-pack",
+        description=DEPLOY_PACK_DESCRIPTION,
+        epilog=DEPLOY_PACK_HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    sub = p.add_subparsers(dest="command", title="commands", metavar="<command>")
+
+    init = sub.add_parser(
+        "init",
+        help="Create a conservative .deploy-pack.toml allowlist policy.",
+        description=(
+            "Create a fail-closed Git-aware deployment selection policy. "
+            "The generated include list is intentionally conservative and must be reviewed."
+        ),
+    )
+    init.add_argument("--force", action="store_true", help="Replace an existing .deploy-pack.toml.")
+
+    pack = sub.add_parser(
+        "pack",
+        help="Package a Git-selected deployment change set.",
+        description=PACK_HELP,
+        epilog=PACK_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    pack.add_argument("baseline", nargs="?", help="Git revision representing current production; defaults to recorded baseline.")
     pack.add_argument("-o", "--output")
     pack.add_argument("--ignore", action="append", default=[])
     pack.add_argument("--include", action="append", default=[])
     pack.add_argument("--committed-only", action="store_true")
     pack.add_argument("--dry-run", action="store_true")
 
-    inspect = sub.add_parser("inspect")
+    artifact = sub.add_parser(
+        "artifact",
+        help="Package an already-built deployment directory without consulting Git.",
+        description=ARTIFACT_HELP,
+        epilog=ARTIFACT_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    artifact.add_argument("--source", required=True, help="Deployment-ready source directory.")
+    artifact.add_argument("--format", choices=["zip", "tar.gz"], default="zip", help="Archive format. Default: zip.")
+    artifact.add_argument("-o", "--output", required=True, help="Output archive path.")
+    artifact.add_argument(
+        "--require", action="append", default=[], metavar="PATH",
+        help="Require a canonical artifact-root-relative path; repeatable.",
+    )
+    artifact.add_argument("--json", action="store_true", help="Emit the stable machine-readable result instead of human output.")
+
+    inspect = sub.add_parser("inspect", help="Preview deployable and excluded Git changes with reasons.")
     inspect.add_argument("baseline", nargs="?")
     inspect.add_argument("--ignore", action="append", default=[])
     inspect.add_argument("--include", action="append", default=[])
     inspect.add_argument("--committed-only", action="store_true")
 
-    mark = sub.add_parser("mark")
+    mark = sub.add_parser("mark", help="Record a verified deployment baseline/history entry.")
     mark.add_argument("ref", nargs="?", default="HEAD")
     mark.add_argument("--evidence")
     mark.add_argument("--archive")
@@ -70,13 +210,13 @@ def parser():
     aex.add_argument("level", choices=list(ASSURANCE_LEVELS))
     aex.add_argument("--json", action="store_true")
 
-    sub.add_parser("baseline")
-    deploy = sub.add_parser("deploy")
+    sub.add_parser("baseline", help="Show the recorded deployment baseline.")
+    deploy = sub.add_parser("deploy", help="Deployment-state operations and health reporting.")
     deploy_sub = deploy.add_subparsers(dest="deploy_command")
     deploy_status = deploy_sub.add_parser("status", help="Summarize deployment state and health.")
     deploy_status.add_argument("--json", action="store_true")
     deploy_status.add_argument("--quiet", action="store_true", help="Emit no output; communicate health via exit code only.")
-    history = sub.add_parser("history")
+    history = sub.add_parser("history", help="Show deployment ledger history.")
     history.add_argument(
         "action",
         nargs="?",
@@ -100,8 +240,8 @@ def parser():
         help="Print records as JSON instead of human-readable text.",
     )
 
-    sub.add_parser("history-verify")
-    rollback = sub.add_parser("rollback")
+    sub.add_parser("history-verify", help="Verify deployment-ledger integrity.")
+    rollback = sub.add_parser("rollback", help="Plan or inspect rollback operations.")
     rollback_sub = rollback.add_subparsers(dest="rollback_command")
     rollback_plan = rollback_sub.add_parser(
         "plan",
@@ -134,7 +274,7 @@ def parser():
     rollback_diff.add_argument("--include", action="append", default=[], metavar="GLOB")
     rollback_diff.add_argument("--json", action="store_true", help="Emit machine-readable JSON report.")
 
-    verify = sub.add_parser("verify")
+    verify = sub.add_parser("verify", help="Verify an archive or extracted deployment tree.")
     verify.add_argument("archive")
     verify.add_argument("--checksum")
     verify.add_argument("--root")
@@ -145,7 +285,7 @@ def parser():
         help="Require exact recorded permission bits for extracted-tree verification.",
     )
 
-    rv = sub.add_parser("remote-verifier")
+    rv = sub.add_parser("remote-verifier", help="Generate a temporary remote deployment verifier.")
     rv.add_argument("archive")
     rv.add_argument("--language", choices=["php", "python"], default="php")
     rv.add_argument("-o", "--output")
@@ -166,16 +306,16 @@ def parser():
         help="Application root relative to the browser verifier file. Default: .",
     )
 
-    ingest = sub.add_parser("ingest-remote-evidence")
+    ingest = sub.add_parser("ingest-remote-evidence", help="Ingest unsigned remote verification evidence.")
     ingest.add_argument("remote_evidence")
     ingest.add_argument("archive")
     ingest.add_argument("-o", "--output")
-    singest = sub.add_parser("ingest-signed-remote-evidence")
+    singest = sub.add_parser("ingest-signed-remote-evidence", help="Ingest signed remote verification evidence.")
     singest.add_argument("signed_remote_evidence")
     singest.add_argument("archive")
     singest.add_argument("--public-key", required=True)
     singest.add_argument("-o", "--output")
-    verifier = sub.add_parser("verifier")
+    verifier = sub.add_parser("verifier", help="Manage verifier identities and lifecycle.")
     vsub = verifier.add_subparsers(dest="verifier_command")
     vi = vsub.add_parser("issue")
     vi.add_argument("--ttl-minutes", type=int, default=30)
@@ -183,13 +323,13 @@ def parser():
     vs.add_argument("verifier_id")
     vr = vsub.add_parser("revoke")
     vr.add_argument("verifier_id")
-    keys = sub.add_parser("keys")
+    keys = sub.add_parser("keys", help="Inspect and revoke evidence signing keys.")
     ksub = keys.add_subparsers(dest="keys_command")
     ksub.add_parser("show")
     krev = ksub.add_parser("revoke")
     krev.add_argument("fingerprint")
     krev.add_argument("--reason", required=True)
-    recovery = sub.add_parser("recovery")
+    recovery = sub.add_parser("recovery", help="Recovery bundles, trust anchors, and offline custody.")
     rsub = recovery.add_subparsers(dest="recovery_command")
     rex = rsub.add_parser("export"); rex.add_argument("output"); rex.add_argument("--unsigned",action="store_true")
     rver = rsub.add_parser("verify"); rver.add_argument("bundle"); rver.add_argument("--public-key",required=True)
@@ -217,9 +357,11 @@ def show_plan(plan):
     print(f"Deployable files: {len(plan.deployable)}")
     for c in plan.deployable:
         print(f"  {c.status:<8} {c.path} [{c.source}]")
-    print(f"Ignored files   : {len(plan.ignored)}")
+    print(f"Excluded files  : {len(plan.ignored)}")
+    reasons = dict(plan.ignored_reasons)
     for c in plan.ignored:
-        print(f"  IGNORED  {c.path} [{c.source}]")
+        reason = reasons.get(c.path, "excluded")
+        print(f"  [{reason}] {c.status:<8} {c.path} [{c.source}]")
     print(f"Remote deletions: {len(plan.deletions)}")
     for c in plan.deletions:
         print(f"  DELETE   {c.path}")
@@ -228,8 +370,13 @@ def resolve_baseline(root, explicit):
     value = explicit or read_baseline(root)
     if not value:
         raise DeployPackError(
-            "no deployment baseline recorded; use `deploy-pack mark <ref>` "
-            "or pass a baseline explicitly"
+            "no deployment baseline is recorded. Git-aware `pack` needs the revision that "
+            "currently represents production. For a first deployment or unknown production "
+            "state, deploy the complete built output with `deploy-pack artifact`, verify it, "
+            "then record the deployed revision with `deploy-pack mark <ref>`. If production "
+            "already corresponds to a known revision, pass it explicitly as the baseline. "
+            "A <ref> may be a commit SHA, tag, branch, or other Git revision; prefer an "
+            "immutable commit SHA or deployment tag."
         )
     return value
 
@@ -262,6 +409,25 @@ def main(argv=None):
                 print("Does not claim  : " + (", ".join(spec['doesNotClaim']) or "-"))
                 return 0
             raise DeployPackError("assurance requires `show` or `explain <level>`")
+
+        if args.command == "artifact":
+            plan = build_artifact_plan(
+                Path(args.source),
+                Path(args.output),
+                args.format,
+                required=args.require,
+            )
+            output = write_artifact(plan)
+            result = artifact_result_dict(plan)
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print("DEPLOY-PACK ARTIFACT: PASS")
+                print(f"  source : {plan.source}")
+                print(f"  format : {plan.format}")
+                print(f"  files  : {plan.file_count}")
+                print(f"  output : {output}")
+            return 0
 
         if args.command == "verify":
             checksum = Path(args.checksum) if args.checksum else None
@@ -508,6 +674,41 @@ def main(argv=None):
             raise DeployPackError("recovery requires export, verify, or import")
 
         root = repo_root()
+
+        if args.command == "init":
+            config_path = root / CONFIG_FILE
+            if config_path.exists() and not args.force:
+                raise DeployPackError(
+                    f"{CONFIG_FILE} already exists; review it or pass --force to replace it"
+                )
+            starter = [
+                "# deploy-pack Git-aware selection policy",
+                "# Review [pack].include before running pack/inspect.",
+                "schema = 2",
+                "",
+                "[pack]",
+                'policy = "allowlist"',
+                "include = [",
+            ]
+            if (root / ".htaccess").exists():
+                starter.append('  ".htaccess",')
+            starter.extend([
+                "  # Add deployable application paths, for example:",
+                '  # "*.php",',
+                '  # "assets/**",',
+                '  # "admin/**",',
+                "]",
+                "exclude = []",
+                "require = []",
+                "",
+            ])
+            atomic_write_text(config_path, "\n".join(starter))
+            print("DEPLOY-PACK INIT")
+            print(f"  created : {config_path}")
+            print("  policy  : allowlist / fail-closed")
+            print("  review  : [pack].include before packaging")
+            print("  next    : deploy-pack inspect <baseline>")
+            return 0
 
         if args.command == "deploy":
             if args.deploy_command != "status":
@@ -893,6 +1094,10 @@ def main(argv=None):
                 print("Deployment history          : appended")
                 return 0
 
+        # Operator-facing Git packaging fails closed. Internal build_plan callers
+        # retain legacy fixture compatibility, but the CLI never packages a new
+        # repository without an explicit policy.
+        load_project_policy(root, required=True)
         baseline = resolve_baseline(root, args.baseline)
         plan = build_plan(
             root, baseline,

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deploy-pack"
-version = "1.9.1"
+version = "1.11.0"
 description = "Package deployable Git changes for structure-preserving shared-hosting uploads."
 readme = "README.md"
 requires-python = ">=3.11"

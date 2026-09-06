@@ -61,32 +61,50 @@ my-project-20260827-182200.deploy.zip.deletions.txt   # when needed
 
 The ZIP embeds `.deploy-pack-manifest.json` containing the baseline ref/commit, current HEAD, packaged paths, per-file SHA-256 values, and required remote deletions.
 
-## Default production exclusions
+## Git-aware deployment selection
 
-Production-biased defaults exclude `README*`, docs, CI definitions, `tests/**`, `test/**`, PHPUnit/PHPStan/Psalm/Infection config, root `Makefile`, developer/local/test scripts, IDE metadata, and deploy-pack's own state/output files.
+`deploy-pack pack` is allowlist-first. Git determines which repository paths changed; `.deploy-pack.toml` determines which paths are deployment material. New repositories fail closed until a policy exists.
 
-## Project policy
-
-Optional `.deploy-pack.toml`:
-
-```toml
-[deploy-pack]
-ignore = [
-  "storage/**",
-  "var/cache/**",
-  "scripts/**",
-]
-include = [
-  "scripts/production/**",
-]
-```
-
-Explicit includes override ignores. CLI policy can be layered on top:
+Initialize a conservative policy:
 
 ```bash
-deploy-pack inspect --ignore 'examples/**'
-deploy-pack pack --include 'scripts/production/**'
+deploy-pack init
 ```
+
+Then review `.deploy-pack.toml`:
+
+```toml
+schema = 2
+
+[pack]
+policy = "allowlist"
+include = [
+  ".htaccess",
+  "*.php",
+  "assets/**",
+  "admin/**",
+  "scripts/commerce-backup.php",
+]
+exclude = [
+  "assets/**/*.map",
+]
+require = [
+  ".htaccess",
+]
+```
+
+Selection rules:
+
+- tests, snapshots, `.env`/`.env.*`, VCS internals, and deploy-pack control artifacts are non-deployable even when broadly allowlisted;
+- scripts, package/build metadata, and hidden paths other than an explicitly selected `.htaccess` are excluded unless the project allowlist selects them;
+- `[pack].exclude` narrows the project allowlist;
+- CLI `--ignore` narrows selection further;
+- in allowlist mode CLI `--include` is also a **narrowing filter** and cannot expand beyond `[pack].include`;
+- `[pack].require` contains exact repository-relative paths that must exist before a package can be planned.
+
+Use `deploy-pack inspect <baseline>` to see excluded changed paths together with their reason.
+
+Pre-1.11 `[deploy-pack] ignore/include` configuration remains readable as legacy compatibility, but `deploy-pack init` only creates the safer schema-2 allowlist form.
 
 ## Reproducible committed-only package
 
@@ -984,3 +1002,16 @@ See `docs/DEPLOY-PACK-ASSURANCE-01.md` for the full trust model.
 ## Frozen architecture baseline
 
 `deploy-pack 1.9.1` is the **DEPLOY-PACK-FREEZE-01** architecture/security baseline. Run `make freeze-check` before release or after security-sensitive maintenance. Architecture expansion is closed; post-freeze work should be defects, security/compatibility/dependency maintenance, or needs demonstrated by real deployments. See `docs/freezes/deploy-pack/DEPLOY-PACK-FREEZE-01.md`.
+
+
+## DEPLOY-PACK-ARTIFACT-01 — built artifact packaging
+
+`artifact` packages an already-built deployment directory without consulting Git. The source directory is authoritative; its contents are placed directly at archive root and Git/change-set exclusions are not applied. `.DS_Store` is the only default junk omission.
+
+```bash
+deploy-pack artifact --source dist --format zip --output site-deploy.zip
+deploy-pack artifact --source build/shared-hosting --format zip --output deploy.zip --require index.html --require .htaccess
+deploy-pack artifact --source dist --format tar.gz --output site-deploy.tar.gz
+```
+
+Output inside source and escaping symlinks are rejected. Dotfiles and empty directories are preserved.

@@ -128,5 +128,5 @@ maintenance = "frozen"
 version_file = "tools/deploy-pack/VERSION"
 entrypoint = "bin/deploy-pack"
 install_hook = "tools/deploy-pack/scripts/bootstrap-runtime.sh"
-test_command = ".venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v"
+test_command = [".venv/bin/python", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-v"]
 description = "Git-aware production deployment packaging, verification, evidence, recovery, and shared-hosting deployment governance."

@@ -42,7 +42,9 @@ if selected and selected not in registry:
     print(f"ERROR: unknown tool {selected!r}", file=sys.stderr)
     raise SystemExit(2)
 
+# INSTALLER-ACCOUNTING-01
 installed = 0
+already_current = 0
 for name in names:
     meta = registry[name]
     status = meta["status"]
@@ -64,7 +66,8 @@ for name in names:
 
     if target.is_symlink() or target.exists():
         if target.is_symlink() and target.resolve() == source.resolve():
-            print(f"OK   {name}: already installed -> {target}")
+            already_current += 1
+            print(f"OK   {name}: already current -> {target}")
             continue
         print(f"ERROR: refusing to replace existing {target}", file=sys.stderr)
         raise SystemExit(1)
@@ -73,5 +76,18 @@ for name in names:
     print(f"LINK {target} -> {source}")
     installed += 1
 
-print(f"Installed {installed} tool(s).")
+ready = installed + already_current
+changed = installed
+print()
+tool_word = "tool" if ready == 1 else "tools"
+print(f"✓ {ready} {tool_word} ready ({changed} changed)")
+if ready:
+    parts = []
+    if installed:
+        parts.append(f"{installed} installed")
+    if already_current:
+        parts.append(f"{already_current} already current")
+    if not parts:
+        parts.append("0 changed")
+    print("  " + " · ".join(parts))
 PY

@@ -1,0 +1,31 @@
+{
+  "checks": [
+    {
+      "name": "focused-tests",
+      "output": "test_cli_works_outside_git_and_json_contract_is_stable (tests.test_artifact01_built_artifact.Artifact01Tests.test_cli_works_outside_git_and_json_contract_is_stable) ... ok\ntest_git_is_not_consulted (tests.test_artifact01_built_artifact.Artifact01Tests.test_git_is_not_consulted) ... ok\ntest_missing_source_and_file_source_fail_cleanly (tests.test_artifact01_built_artifact.Artifact01Tests.test_missing_source_and_file_source_fail_cleanly) ... ok\ntest_noncanonical_platform_filename_is_rejected (tests.test_artifact01_built_artifact.Artifact01Tests.test_noncanonical_platform_filename_is_rejected) ... ok\ntest_output_inside_source_is_rejected_before_write (tests.test_artifact01_built_artifact.Artifact01Tests.test_output_inside_source_is_rejected_before_write) ... ok\ntest_reproducible_archives (tests.test_artifact01_built_artifact.Artifact01Tests.test_reproducible_archives) ... ok\ntest_require_is_repeatable_and_fails_before_archive_write (tests.test_artifact01_built_artifact.Artifact01Tests.test_require_is_repeatable_and_fails_before_archive_write) ... ok\ntest_require_rejects_noncanonical_paths (tests.test_artifact01_built_artifact.Artifact01Tests.test_require_rejects_noncanonical_paths) ... ok\ntest_symlink_escape_is_rejected_and_internal_symlink_is_preserved (tests.test_artifact01_built_artifact.Artifact01Tests.test_symlink_escape_is_rejected_and_internal_symlink_is_preserved) ... ok\ntest_tar_gz_flattens_source_root_preserves_dotfiles_nested_and_empty_dirs (tests.test_artifact01_built_artifact.Artifact01Tests.test_tar_gz_flattens_source_root_preserves_dotfiles_nested_and_empty_dirs) ... ok\ntest_zip_flattens_source_root_preserves_dotfiles_nested_and_empty_dirs (tests.test_artifact01_built_artifact.Artifact01Tests.test_zip_flattens_source_root_preserves_dotfiles_nested_and_empty_dirs) ... ok\n\n----------------------------------------------------------------------\nRan 11 tests in 0.238s\n\nOK\n",
+      "seconds": 0.434,
+      "status": "PASS"
+    },
+    {
+      "name": "compileall",
+      "output": "",
+      "seconds": 0.08,
+      "status": "PASS"
+    },
+    {
+      "name": "cli-help",
+      "output": "usage: deploy-pack artifact [-h] --source SOURCE [--format {zip,tar.gz}]\n                            -o OUTPUT [--require PATH] [--json]\n\noptions:\n  -h, --help            show this help message and exit\n  --source SOURCE       Deployment-ready source directory.\n  --format {zip,tar.gz}\n  -o, --output OUTPUT   Output archive path.\n  --require PATH        Require a canonical artifact-root-relative path;\n                        repeatable.\n  --json                Emit a machine-readable result.\n",
+      "seconds": 0.166,
+      "status": "PASS"
+    },
+    {
+      "name": "version",
+      "output": "deploy-pack 1.10.0\n",
+      "seconds": 0.364,
+      "status": "PASS"
+    }
+  ],
+  "gate": "DEPLOY-PACK-ARTIFACT-01",
+  "status": "PASS",
+  "version": "1.10.0"
+}

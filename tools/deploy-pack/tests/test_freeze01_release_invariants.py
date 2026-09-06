@@ -1,4 +1,5 @@
 import ast
+import json
 import pathlib
 import tomllib
 import unittest
@@ -26,9 +27,18 @@ class Freeze01ReleaseInvariantTests(unittest.TestCase):
         self.assertEqual(data['build-system']['requires'], ['setuptools>=82,<83'])
         self.assertEqual(data['project']['dependencies'], ['cryptography>=46,<47'])
 
-    def test_freeze_version_is_patch_release(self):
+    def test_freeze_record_remains_pinned_to_1_9_1(self):
+        manifest = json.loads(
+            (ROOT / 'docs/manifests/DEPLOY-PACK-FREEZE-01-MANIFEST.json').read_text(encoding='utf-8')
+        )
+        self.assertEqual(manifest['releaseVersion'], '1.9.1')
+        self.assertEqual(manifest['compatibilityBaseline'], '1.9.1')
+        self.assertEqual(manifest['status'], 'FROZEN')
+
         data = tomllib.loads((ROOT / 'pyproject.toml').read_text(encoding='utf-8'))
-        self.assertEqual(data['project']['version'], '1.9.1')
+        current = tuple(int(part) for part in data['project']['version'].split('.'))
+        frozen = (1, 9, 1)
+        self.assertGreaterEqual(current, frozen)
 
 if __name__ == '__main__':
     unittest.main()

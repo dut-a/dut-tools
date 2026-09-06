@@ -1,0 +1,14 @@
+{
+  "increment": "DEPLOY-PACK-ARTIFACT-01",
+  "name": "Built Artifact Packaging",
+  "version": "1.10.0",
+  "mode": "artifact",
+  "gitIndependent": true,
+  "formats": ["zip", "tar.gz"],
+  "sourceRootFlattened": true,
+  "dotfilesPreserved": true,
+  "emptyDirectoriesPreserved": true,
+  "requiredPathAssertions": true,
+  "canonicalPathSemantics": "fail-closed",
+  "sourceAuthoritative": true
+}
