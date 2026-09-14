@@ -1,0 +1,28 @@
+{
+  "increment": "DEPLOY-PACK-CI-01",
+  "version": "1.16.0",
+  "type": "feature",
+  "commands": [
+    "ci check",
+    "ci build"
+  ],
+  "check_gates": [
+    "gitignore status --check",
+    "inspect",
+    "history-verify",
+    "deploy status"
+  ],
+  "build_pipeline": [
+    "inspect",
+    "pack",
+    "verify"
+  ],
+  "invariants": [
+    "ci workflows do not advance deployment truth",
+    "authoritative .deploy-pack state is fingerprinted before and after CI execution",
+    "ci check aggregates stable read-only gates",
+    "ci build verifies the exact archive it produces",
+    "json output is one machine-readable document",
+    "failed earlier build phases skip dependent later phases"
+  ]
+}

@@ -15,6 +15,7 @@ from .keyring import load as load_keyring, register as register_signer, revoke a
 from .state import repository_lock, begin_mark_transaction, commit_mark_transaction, recover_mark_transaction, atomic_write_text
 from .assurance import taxonomy as assurance_taxonomy, ASSURANCE_LEVELS
 from .artifact import build_artifact_plan, write_artifact, result_dict as artifact_result_dict
+from .ci import CiError, run_ci_command
 from .gitignore_managed import GitignoreManagedError, install_managed_gitignore, run_gitignore_command
 from .core import (
     BASELINE_FILE, CONFIG_FILE, DeployPackError, build_plan, load_project_policy, read_baseline, repo_root, resolve_ref,
@@ -130,6 +131,7 @@ DEPLOY_PACK_HELP_EPILOG = """COMMAND GROUPS
     artifact                  Package an already-built deployment directory.
     inspect                   Preview Git-selected deployable/excluded files.
     gitignore                  Manage generated-artifact ignore rules.
+    ci                         Run stable non-authoritative CI workflows.
 
   Deployment state
     baseline                  Show the recorded production baseline.
@@ -594,6 +596,42 @@ def parser():
         ),
     )
     init.add_argument("--force", action="store_true", help="Replace an existing .deploy-pack.toml.")
+
+    ci_cmd = sub.add_parser(
+        "ci",
+        help="Run stable non-authoritative deploy-pack CI workflows.",
+        description=(
+            "CI façade for deploy-pack. `check` aggregates read-only repository/"
+            "deployment gates; `build` performs inspect -> pack -> verify. "
+            "Neither workflow may advance deployment truth."
+        ),
+    )
+    ci_sub = ci_cmd.add_subparsers(dest="ci_command")
+
+    ci_check = ci_sub.add_parser(
+        "check",
+        help="Run read-only CI gates and fail if deploy-pack state mutates.",
+    )
+    ci_check.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit one machine-readable JSON result document.",
+    )
+
+    ci_build = ci_sub.add_parser(
+        "build",
+        help="Inspect, package, and verify one CI deployment artifact.",
+    )
+    ci_build.add_argument(
+        "--output",
+        required=True,
+        help="Path for the generated deployment archive.",
+    )
+    ci_build.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit one machine-readable JSON result document.",
+    )
 
     gitignore_cmd = sub.add_parser(
         "gitignore",
@@ -1162,6 +1200,13 @@ def main(argv=None):
                     result=import_recovery_bundle_trusted(root,Path(args.bundle).expanduser(),public_key_file=Path(args.public_key).expanduser())
                 print(json.dumps(result,indent=2,sort_keys=True)); return 0
             raise DeployPackError("recovery requires export, verify, or import")
+
+        if args.command == "ci":
+            root = repo_root()
+            try:
+                return run_ci_command(root, args)
+            except CiError as exc:
+                raise DeployPackError(str(exc)) from exc
 
         if args.command == "gitignore":
             root = repo_root()
