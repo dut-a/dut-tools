@@ -233,10 +233,18 @@ def protected_artifact_reason(root: Path, path: str) -> str | None:
         and "verificationMethod'=>'browser'" in text
         and "php-browser" in text
     )
+    unsigned_remote_verifier = (
+        "DEPLOY-PACK VERIFY: PASS" in text
+        and "remoteDeletions" in text
+        and ("verificationMethod" in text or "verificationScope" in text)
+        and ("MANIFEST=" in text or "$manifest=json_decode(" in text)
+    )
     if signed_python or signed_php:
         return "secret-bearing deploy-pack signed verifier"
     if browser_php:
         return "token-bearing deploy-pack browser verifier"
+    if unsigned_remote_verifier:
+        return "deploy-pack generated remote verifier"
 
     stripped = text.lstrip()
     if stripped.startswith("{"):
@@ -259,9 +267,10 @@ def protected_artifact_reason(root: Path, path: str) -> str | None:
             ):
                 return "deploy-pack-style public-key artifact"
             if (
-                value.get("verificationScope") in {"local-archive", "local-extracted", "remote"}
-                and "manifest" in value
-                and "verifiedAt" in value
+                value.get("verificationScope") in {"local-archive", "local-extracted", "archive", "extracted-tree", "remote"}
+                and isinstance(value.get("manifest"), dict)
+                and ("verifiedAt" in value or value.get("result") in {"PASS", "FAIL"})
+                and ("headCommit" in value.get("manifest", {}) or "sha256" in value.get("manifest", {}))
             ):
                 return "deploy-pack verification evidence"
             if (
@@ -1098,6 +1107,42 @@ def validate_mark_evidence(
     return resolved_ref, evidence
 
 
+def validate_baseline_reconciliation(
+    root: Path,
+    ref: str,
+    evidence_path: Path,
+    *,
+    archive: Path,
+) -> tuple[str | None, str, dict]:
+    """Validate a correction of recorded deployment state without weakening mark invariants.
+
+    Reconciliation is for the case where production already contains the intended bytes but
+    the recorded baseline points at the wrong Git commit. The correcting archive/evidence
+    must be freshly bound to the target commit; old evidence for a different head is rejected.
+    """
+    if archive is None:
+        raise DeployPackError("baseline reconciliation requires --archive")
+    previous_ref = read_baseline(root)
+    if not previous_ref:
+        raise DeployPackError("baseline reconciliation requires an existing recorded baseline")
+    previous_commit = resolve_ref(root, previous_ref)
+    resolved, evidence = validate_mark_evidence(
+        root, ref, evidence_path, archive=archive
+    )
+    if resolved == previous_commit:
+        raise DeployPackError("baseline reconciliation target already matches the recorded baseline")
+    proc = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", previous_commit, resolved],
+        cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+    )
+    if proc.returncode != 0:
+        raise DeployPackError(
+            "baseline reconciliation target must descend from the currently recorded baseline; "
+            "use the explicit rollback workflow for non-descendant history"
+        )
+    return previous_commit, resolved, evidence
+
+
 REMOTE_EVIDENCE_SCHEMA_VERSION = 1
 
 
@@ -1350,6 +1395,8 @@ def append_deployment_history(
     archive: Path | None,
     unsafe: bool = False,
     rollback_target_record: int | None = None,
+    deployment_kind: str | None = None,
+    reconciliation_reason: str | None = None,
     filename: str = LEDGER_FILE,
 ) -> dict:
     path = root / filename
@@ -1366,7 +1413,7 @@ def append_deployment_history(
         "schemaVersion": LEDGER_SCHEMA_VERSION,
         "recordNumber": record_number,
         "recordedAt": _utc_now_iso(),
-        "deploymentKind": "rollback" if rollback_target_record is not None else "forward",
+        "deploymentKind": deployment_kind or ("rollback" if rollback_target_record is not None else "forward"),
         "previousBaseline": previous_baseline,
         "newBaselineRef": new_baseline_ref,
         "newBaselineCommit": new_baseline_commit,
@@ -1376,6 +1423,16 @@ def append_deployment_history(
         "rollback": None,
         "previousRecordHash": existing_records[-1]["recordHash"] if existing_records else LEDGER_ZERO_HASH,
     }
+
+    if record["deploymentKind"] == "reconciliation":
+        reason = (reconciliation_reason or "").strip()
+        if not reason:
+            raise DeployPackError("reconciliation history requires a non-empty reason")
+        record["reconciliation"] = {
+            "reason": reason,
+            "previousRecordedBaseline": previous_baseline,
+            "verifiedTargetCommit": new_baseline_commit,
+        }
 
     if rollback_target_record is not None:
         if rollback_target_record < 1 or rollback_target_record > len(existing_records):

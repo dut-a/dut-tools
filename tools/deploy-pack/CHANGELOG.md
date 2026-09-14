@@ -18,3 +18,8 @@
 
 - Expand deploy-pack CLI help.
 - List individual tests in default dut-tools test output.
+
+## 1.12.0 — DEPLOY-PACK-ARTIFACT-POLICY-01
+
+- Add explicit `[artifact].include` / `[artifact].exclude` deployment-surface policy.
+- Keep hard artifact hygiene non-overridable and require required paths to survive policy.

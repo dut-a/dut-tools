@@ -1,0 +1,22 @@
+{
+  "increment": "DEPLOY-PACK-ARTIFACT-POLICY-01",
+  "title": "Explicit Artifact Deployment Surface",
+  "type": "feature",
+  "releaseVersion": "1.12.0",
+  "behavioralSemanticsChanged": true,
+  "config": {
+    "file": ".deploy-pack.toml",
+    "table": "artifact",
+    "keys": [
+      "include",
+      "exclude"
+    ]
+  },
+  "invariants": {
+    "includeNonEmpty": "allowlist",
+    "exclude": "always narrows",
+    "hardHygieneOverridable": false,
+    "requiredMustSurvivePolicy": true,
+    "gitPackPolicyIndependent": true
+  }
+}

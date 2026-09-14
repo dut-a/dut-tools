@@ -1,0 +1,6 @@
+{
+  "increment": "DEPLOY-PACK-GIT-CLOSEOUT-HARDEN-01",
+  "releaseVersion": "1.13.0",
+  "focusedGate": "tests.test_git_closeout_harden01",
+  "fullSuiteCommand": "make test TOOL=deploy-pack"
+}

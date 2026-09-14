@@ -1,0 +1,16 @@
+{
+  "increment": "DEPLOY-PACK-GIT-CLOSEOUT-HARDEN-01",
+  "releaseVersion": "1.13.0",
+  "changes": [
+    "generated-artifact-content-protection",
+    "signed-verifier-cli-parser",
+    "audited-baseline-reconciliation"
+  ],
+  "reconciliation": {
+    "requiresArchive": true,
+    "requiresFreshSignedRemoteEvidence": true,
+    "requiresReason": true,
+    "requiresDescendantTarget": true,
+    "unsafeBypass": false
+  }
+}

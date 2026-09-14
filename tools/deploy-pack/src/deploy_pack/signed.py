@@ -144,10 +144,30 @@ def safe(root,rel):
   if cur.is_symlink(): return None
  return root.joinpath(*parts)
 def main():
- root=Path(sys.argv[1] if len(sys.argv)>1 else ".").resolve(); strict="--strict-permissions" in sys.argv
- if "--signed-evidence-out" not in sys.argv:
+ root=Path("."); strict=False; out=None; positional=[]; i=1
+ while i < len(sys.argv):
+  arg=sys.argv[i]
+  if arg in ("-h","--help"):
+   print(f"usage: {Path(sys.argv[0]).name} [ROOT] --signed-evidence-out FILE [--strict-permissions]")
+   print("Verify the deployed tree against the manifest embedded in this one-time deploy-pack verifier.")
+   print("ROOT defaults to the current directory and may appear before or after options.")
+   print("--signed-evidence-out FILE  Required path for signed verification evidence JSON.")
+   print("--strict-permissions        Require exact recorded permission bits.")
+   print("Exit 0 only when deployment verification passes and signed evidence is written."); return 0
+  if arg=="--strict-permissions": strict=True; i+=1; continue
+  if arg=="--signed-evidence-out":
+   if i+1>=len(sys.argv): print("ERROR: --signed-evidence-out requires FILE",file=sys.stderr); return 2
+   out=Path(sys.argv[i+1]); i+=2; continue
+  if arg.startswith("-"):
+   print(f"ERROR: unknown option: {arg}",file=sys.stderr); return 2
+  positional.append(arg); i+=1
+ if len(positional)>1:
+  print("ERROR: at most one ROOT may be supplied",file=sys.stderr); return 2
+ if positional: root=Path(positional[0])
+ root=root.resolve()
+ if out is None:
   print("ERROR: --signed-evidence-out is required",file=sys.stderr); return 2
- out=Path(sys.argv[sys.argv.index("--signed-evidence-out")+1]); failures=[]
+ failures=[]
  for e in MANIFEST.get("files",[]):
   rel=e["path"]; p=safe(root,rel)
   if p is None: failures.append(["PATH_ESCAPE",rel]); continue
@@ -193,8 +213,17 @@ declare(strict_types=1);
 $manifest=json_decode('__MANIFEST__',true,512,JSON_THROW_ON_ERROR);$verifierIdentity=json_decode('__IDENTITY__',true,512,JSON_THROW_ON_ERROR);
 $secret=base64_decode('__SECRET__',true); $public=base64_decode('__PUB__',true);
 if(!function_exists('sodium_crypto_sign_detached')){fwrite(STDERR,"ERROR: PHP sodium extension required\n");exit(2);}
-$root=$argv[1]??'.';$root=realpath($root)?:$root;$strict=in_array('--strict-permissions',$argv,true);$out=null;
-for($i=2;$i<count($argv);$i++)if($argv[$i]==='--signed-evidence-out'&&isset($argv[$i+1]))$out=$argv[$i+1];
+$root='.';$strict=false;$out=null;$positional=[];
+for($i=1;$i<count($argv);$i++){
+  $arg=$argv[$i];
+  if($arg==='-h'||$arg==='--help'){fwrite(STDOUT,"usage: ".basename($argv[0])." [ROOT] --signed-evidence-out FILE [--strict-permissions]\n\nVerify the deployed tree against the manifest embedded in this one-time deploy-pack verifier.\nROOT defaults to the current directory and may appear before or after options.\n\n  --signed-evidence-out FILE  Required path for signed verification evidence JSON.\n  --strict-permissions        Require exact recorded permission bits.\n\nExit 0 only when deployment verification passes and signed evidence is written.\n");exit(0);}
+  if($arg==='--strict-permissions'){$strict=true;continue;}
+  if($arg==='--signed-evidence-out'){if(!isset($argv[$i+1])){fwrite(STDERR,"ERROR: --signed-evidence-out requires FILE\n");exit(2);}$out=$argv[++$i];continue;}
+  if(str_starts_with($arg,'-')){fwrite(STDERR,"ERROR: unknown option: ".$arg."\n");exit(2);}
+  $positional[]=$arg;
+}
+if(count($positional)>1){fwrite(STDERR,"ERROR: at most one ROOT may be supplied\n");exit(2);}
+if(count($positional)===1)$root=$positional[0];$root=realpath($root)?:$root;
 if($out===null){fwrite(STDERR,"ERROR: --signed-evidence-out is required\n");exit(2);}$fail=[];
 function dpt($p){if(is_link($p))return'symlink';if(is_file($p))return'file';if(is_dir($p))return'directory';return'other';}
 function dpsafe($root,$rel){if(!is_string($rel)||$rel===''||strpos($rel,"\0")!==false||strpos($rel,'\\')!==false||str_starts_with($rel,'/')||preg_match('/^[A-Za-z]:/',$rel))return null;$parts=explode('/',$rel);$cur=rtrim($root,DIRECTORY_SEPARATOR);for($i=0;$i<count($parts);$i++){if($parts[$i]===''||$parts[$i]==='.'||$parts[$i]==='..')return null;if($i<count($parts)-1){$cur.=DIRECTORY_SEPARATOR.$parts[$i];if(is_link($cur))return null;}}return rtrim($root,DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.implode(DIRECTORY_SEPARATOR,$parts);}

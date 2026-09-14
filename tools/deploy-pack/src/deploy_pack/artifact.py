@@ -9,9 +9,99 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from .artifact_policy import ArtifactPolicy, load_artifact_policy
 from .core import DeployPackError, _validate_relative_path, _validate_symlink_target
 
-_ARTIFACT_JUNK_BASENAMES = {".DS_Store"}
+# Artifact mode packages an already-built deployment tree, but it must not
+# blindly ship repository metadata, local environment state, test/build caches,
+# CI/editor configuration, or developer tooling.
+#
+# This policy is deliberately independent of Git-aware `pack` policy and
+# `.gitignore`: build output is often Git-ignored and may contain legitimate
+# hidden deployment files such as `.htaccess`, `.user.ini`, and `.well-known/`.
+#
+# Do NOT add ambiguous deployment directories such as `dist`, `build`, `vendor`,
+# `public`, or `assets` here. They may be the intended payload.
+_ARTIFACT_EXCLUDED_DIR_BASENAMES = {
+    # VCS / CI / project-local metadata
+    ".git",
+    ".hg",
+    ".svn",
+    ".github",
+    ".gitlab",
+    ".circleci",
+    ".tembeek",
+
+    # dependency / package-manager stores
+    "node_modules",
+    ".pnpm-store",
+    ".venv",
+    "venv",
+    ".tox",
+    ".nox",
+
+    # caches / temporary state
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".cache",
+    ".tmp",
+    "tmp",
+
+    # editor / IDE state
+    ".idea",
+    ".vscode",
+
+    # test / QA output
+    "coverage",
+    ".nyc_output",
+    "playwright-report",
+    "test-results",
+
+    # common repository-only content
+    "docs",
+    "tests",
+    "test",
+}
+
+_ARTIFACT_EXCLUDED_FILE_BASENAMES = {
+    # OS junk
+    ".DS_Store",
+    "Thumbs.db",
+
+    # deploy-pack / VCS control files
+    ".deploy-pack.toml",
+    ".deploy-pack-baseline",
+    ".deploy-pack-history.jsonl",
+    ".deploy-pack.lock",
+    ".gitignore",
+    ".gitattributes",
+
+    # local environment / runtime-selection files
+    ".env",
+    ".env.local",
+    ".env.development",
+    ".env.test",
+    ".nvmrc",
+
+    # editor / formatter / lint configuration
+    ".editorconfig",
+    ".prettierignore",
+    ".prettierrc",
+    ".prettierrc.json",
+    ".prettierrc.js",
+    ".prettierrc.cjs",
+
+    # common repository documentation/build orchestration
+    "Makefile",
+}
+
+_ARTIFACT_EXCLUDED_FILE_SUFFIXES = {
+    ".log",
+    ".pyc",
+    ".pyo",
+}
 _ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
 _TAR_EPOCH = 0
 
@@ -69,7 +159,24 @@ def _validate_layout(source: Path, output: Path) -> tuple[Path, Path]:
     return source_root, output_path
 
 
-def _walk(source_root: Path) -> tuple[ArtifactEntry, ...]:
+def _artifact_policy_may_descend(directory_member: str, policy: ArtifactPolicy) -> bool:
+    if policy.excludes(directory_member) or policy.excludes(directory_member + "/"):
+        return False
+    if not policy.include:
+        return True
+
+    prefix = directory_member.rstrip("/") + "/"
+    for pattern in policy.include:
+        if policy.includes(directory_member):
+            return True
+        wildcard_positions = [i for i in (pattern.find("*"), pattern.find("?")) if i >= 0]
+        wildcard_at = min(wildcard_positions) if wildcard_positions else len(pattern)
+        static_prefix = pattern[:wildcard_at]
+        if static_prefix.startswith(prefix) or prefix.startswith(static_prefix):
+            return True
+    return False
+
+def _walk(source_root: Path, policy: ArtifactPolicy) -> tuple[ArtifactEntry, ...]:
     entries: list[ArtifactEntry] = []
     seen: set[str] = set()
 
@@ -80,11 +187,33 @@ def _walk(source_root: Path) -> tuple[ArtifactEntry, ...]:
             raise DeployPackError(f"cannot read artifact directory {directory}: {exc}") from exc
 
         for child in children:
-            if child.name in _ARTIFACT_JUNK_BASENAMES:
-                continue
+            # Exclusions are basename-based at every depth. Directory exclusions
+            # prune the subtree entirely; file exclusions omit only that file.
+            #
+            # Do not broaden this to "all dotfiles": deployment-significant files
+            # such as .htaccess, .user.ini, and .well-known must remain packageable.
+            if child.is_dir(follow_symlinks=False):
+                if child.name in _ARTIFACT_EXCLUDED_DIR_BASENAMES:
+                    continue
+            elif not child.is_symlink():
+                if child.name in _ARTIFACT_EXCLUDED_FILE_BASENAMES:
+                    continue
+                if any(child.name.endswith(suffix) for suffix in _ARTIFACT_EXCLUDED_FILE_SUFFIXES):
+                    continue
+
             local = Path(child.path)
             relative = local.relative_to(source_root)
             member = _canonical_member(relative)
+
+            if child.is_dir(follow_symlinks=False):
+                if policy.excludes(member) or not _artifact_policy_may_descend(member, policy):
+                    continue
+            elif not child.is_symlink():
+                if policy.excludes(member):
+                    continue
+                if policy.include and not policy.includes(member):
+                    continue
+
             if member in seen:
                 raise DeployPackError(f"duplicate artifact member after canonicalization: {member}")
             seen.add(member)
@@ -121,6 +250,46 @@ def _walk(source_root: Path) -> tuple[ArtifactEntry, ...]:
     return tuple(sorted(entries, key=lambda entry: entry.path))
 
 
+
+def _apply_artifact_policy(
+    entries: tuple[ArtifactEntry, ...],
+    policy: ArtifactPolicy,
+) -> tuple[ArtifactEntry, ...]:
+    candidates = tuple(entry for entry in entries if not policy.excludes(entry.path))
+    if not policy.include:
+        return candidates
+
+    direct = {entry.path for entry in candidates if policy.includes(entry.path)}
+    if not direct:
+        raise DeployPackError(
+            "artifact include policy selected no paths; "
+            "check [artifact].include in .deploy-pack.toml"
+        )
+
+    selected = set(direct)
+    available = {entry.path for entry in candidates}
+    for path in tuple(direct):
+        parts = path.split("/")
+        for index in range(1, len(parts)):
+            ancestor = "/".join(parts[:index])
+            if ancestor in available:
+                selected.add(ancestor)
+
+    return tuple(entry for entry in candidates if entry.path in selected)
+
+
+def _validate_required_selected(
+    required: tuple[str, ...],
+    entries: tuple[ArtifactEntry, ...],
+) -> None:
+    selected = {entry.path for entry in entries}
+    for value in required:
+        if value not in selected:
+            raise DeployPackError(
+                f"required artifact path is excluded by artifact policy: {value}"
+            )
+
+
 def _validate_required(source_root: Path, required: list[str] | tuple[str, ...]) -> tuple[str, ...]:
     normalized: list[str] = []
     seen: set[str] = set()
@@ -148,8 +317,10 @@ def build_artifact_plan(
     if archive_format not in {"zip", "tar.gz"}:
         raise DeployPackError(f"unsupported artifact format: {archive_format}")
     source_root, output_path = _validate_layout(source.expanduser(), output)
-    entries = _walk(source_root)
+    policy = load_artifact_policy(source_root)
+    entries = _apply_artifact_policy(_walk(source_root, policy), policy)
     required_paths = _validate_required(source_root, required)
+    _validate_required_selected(required_paths, entries)
     return ArtifactPlan(source_root, output_path, archive_format, entries, required_paths)
 
 

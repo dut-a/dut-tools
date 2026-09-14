@@ -1,0 +1,13 @@
+{
+  "increment": "DEPLOY-PACK-HELP-SURFACE-01",
+  "releaseVersion": "1.14.1",
+  "behaviorChange": "registration-repair-only",
+  "surfaces": [
+    "top-level-cli",
+    "subcommand-cli",
+    "generated-signed-verifier",
+    "closeout-script",
+    "make-target"
+  ],
+  "newMakeTarget": "deploy-help"
+}

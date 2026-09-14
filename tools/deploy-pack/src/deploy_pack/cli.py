@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +15,7 @@ from .keyring import load as load_keyring, register as register_signer, revoke a
 from .state import repository_lock, begin_mark_transaction, commit_mark_transaction, recover_mark_transaction, atomic_write_text
 from .assurance import taxonomy as assurance_taxonomy, ASSURANCE_LEVELS
 from .artifact import build_artifact_plan, write_artifact, result_dict as artifact_result_dict
+from .gitignore_managed import GitignoreManagedError, install_managed_gitignore, run_gitignore_command
 from .core import (
     BASELINE_FILE, CONFIG_FILE, DeployPackError, build_plan, load_project_policy, read_baseline, repo_root, resolve_ref,
     verify_archive, verify_extracted_tree, write_baseline, write_package,
@@ -24,6 +27,94 @@ from .core import (
     evidence_is_signed_remote,
     deployment_status,
 )
+from .core import validate_baseline_reconciliation
+
+# BEGIN DEPLOY-PACK-HELP-COLOR-ALIAS-01
+_ANSI_RESET = "\033[0m"
+_ANSI_BOLD = "\033[1m"
+_ANSI_CYAN = "\033[36m"
+_ANSI_GREEN = "\033[32m"
+_ANSI_YELLOW = "\033[33m"
+_ANSI_DIM = "\033[2m"
+
+
+def _help_color_enabled() -> bool:
+    """Return whether human help should contain ANSI styling.
+
+    NO_COLOR always disables color. DEPLOY_PACK_COLOR accepts auto/always/never;
+    auto styles only an interactive stdout with a non-dumb terminal.
+    """
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    mode = os.environ.get("DEPLOY_PACK_COLOR", "auto").strip().lower()
+    if mode in {"never", "0", "false", "no", "off"}:
+        return False
+    if mode in {"always", "1", "true", "yes", "on"}:
+        return True
+    if mode not in {"", "auto"}:
+        # Fail soft for help rendering: unknown values behave like auto.
+        mode = "auto"
+    return bool(getattr(sys.stdout, "isatty", lambda: False)()) and os.environ.get("TERM", "") != "dumb"
+
+
+def _paint(text: str, *codes: str) -> str:
+    if not _help_color_enabled() or not text:
+        return text
+    return "".join(codes) + text + _ANSI_RESET
+
+
+class DeployPackHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Readable, TTY-aware help styling without contaminating redirected output."""
+
+    def start_section(self, heading):
+        super().start_section(_paint(heading, _ANSI_BOLD, _ANSI_CYAN))
+
+    def _format_action_invocation(self, action):
+        rendered = super()._format_action_invocation(action)
+        if not _help_color_enabled():
+            return rendered
+        if action.option_strings:
+            return _paint(rendered, _ANSI_GREEN)
+        return _paint(rendered, _ANSI_YELLOW)
+
+    def _format_text(self, text):
+        rendered = super()._format_text(text)
+        if not _help_color_enabled():
+            return rendered
+        lines=[]
+        for line in rendered.splitlines(keepends=True):
+            bare=line.rstrip("\r\n")
+            ending=line[len(bare):]
+            if re.fullmatch(r"[A-Z][A-Z0-9 /&_.+-]{2,}", bare.strip()):
+                indent=bare[:len(bare)-len(bare.lstrip())]
+                title=bare.strip()
+                line=indent + _paint(title, _ANSI_BOLD, _ANSI_CYAN) + ending
+            lines.append(line)
+        return "".join(lines)
+
+
+def _apply_help_formatter_tree(parser_obj):
+    """Apply deploy-pack help rendering to every nested argparse parser.
+
+    Python 3.14+ argparse has its own ANSI color layer enabled by default. Disable
+    that layer explicitly so DEPLOY_PACK_COLOR/NO_COLOR remain the single source
+    of truth across every supported Python version. DeployPackHelpFormatter then
+    adds our styling only when _help_color_enabled() permits it.
+    """
+    parser_obj.formatter_class = DeployPackHelpFormatter
+    # argparse <= 3.13 does not consume this attribute; assigning it is harmless.
+    # argparse 3.14+ does consume it and would otherwise emit ANSI independently.
+    parser_obj.color = False
+    for action in getattr(parser_obj, "_actions", ()):
+        if isinstance(action, argparse._SubParsersAction):
+            for child in action.choices.values():
+                _apply_help_formatter_tree(child)
+
+
+def _program_name() -> str:
+    invoked = Path(sys.argv[0]).name
+    return invoked if invoked in {"deploy-pack", "dp"} else "deploy-pack"
+# END DEPLOY-PACK-HELP-COLOR-ALIAS-01
 
 DEPLOY_PACK_DESCRIPTION = """Production deployment packaging, verification, and deployment-state governance.
 
@@ -38,10 +129,12 @@ DEPLOY_PACK_HELP_EPILOG = """COMMAND GROUPS
     pack                      Package a Git-selected deployment change set.
     artifact                  Package an already-built deployment directory.
     inspect                   Preview Git-selected deployable/excluded files.
+    gitignore                  Manage generated-artifact ignore rules.
 
   Deployment state
     baseline                  Show the recorded production baseline.
     mark                      Record a verified deployment as deployed.
+    reconcile-baseline        Correct a recorded production baseline with fresh signed evidence.
     deploy status             Report deployment/recovery health.
 
   Verification
@@ -70,14 +163,37 @@ EXAMPLES
   deploy-pack deploy status
   deploy-pack history --limit 10
 
+GIT-AWARE CLOSEOUT
+  After deploying a `pack` archive, use signed remote verification, ingest the
+  resulting evidence, then `mark` the deployed ref. Run `deploy-pack mark --help`.
+
+ROUTINE GIT-AWARE CLOSEOUT
+  make deploy-help              Show the condensed two-phase workflow.
+  make deploy-prepare           Prepare archive + signed production verifier.
+  make deploy-closeout EVIDENCE=/path/to/signed-evidence.json
+                                Ingest, mark, and run all post-closeout gates.
+
+BASELINE CORRECTION
+  `reconcile-baseline` is only for an already-correct production tree whose recorded
+  Git baseline is wrong. It still requires fresh signed remote evidence.
+
+SHORT COMMAND
+  dp                        Exact short alias for deploy-pack.
+  Example: dp deploy status
+
+HELP COLOR
+  Interactive help is colored automatically. Redirected/piped help stays plain.
+  NO_COLOR=1 disables styling. DEPLOY_PACK_COLOR=always|never|auto overrides mode.
+
 Run `deploy-pack <command> --help` for command-specific options and examples.
 """
 
 ARTIFACT_HELP = """Package an already-built deployment-ready directory without consulting Git.
 
-The source directory is authoritative. Its contents are placed directly at archive root;
-the source directory name itself is never added as a prefix. Git-oriented production
-exclusions are not applied. Canonical-path and symlink-containment safety rules remain enforced.
+The source directory is authoritative. Its selected contents are placed directly at archive root;
+the source directory name itself is never added as a prefix. Artifact mode applies its hard hygiene
+layer plus optional [artifact].include/[artifact].exclude policy from .deploy-pack.toml.
+Git-aware [pack] policy and .gitignore are not consulted.
 """
 
 ARTIFACT_EPILOG = """EXAMPLES
@@ -127,12 +243,344 @@ EXAMPLES
     deploy-pack pack --output deploy.zip
 """
 
+GIT_AWARE_CLOSEOUT_HELP = """Record a verified Git-aware deployment as the production baseline.
+
+`mark` is the final closeout step for a deployment created with `deploy-pack pack`.
+Its --evidence input is deploy-pack verification evidence for the exact deployed archive;
+it is not the ZIP itself and not an operator-written note.
+
+A successful mark records the deployed revision in deployment history and advances the
+production baseline used by the next `deploy-pack inspect` / `deploy-pack pack`.
+"""
+
+GIT_AWARE_CLOSEOUT_EPILOG = """GIT-AWARE DEPLOYMENT CLOSEOUT
+
+If the archive has already been deployed, continue with that exact archive:
+
+  1. Verify the archive locally.
+       deploy-pack verify --help
+
+  2. Generate a signed remote verifier bound to that archive.
+       deploy-pack remote-verifier --help
+
+  3. Run the generated verifier against the production deployment.
+     Bring the signed verifier output/evidence back to this repository.
+
+  4. Ingest and bind the signed remote evidence to the exact local archive.
+       deploy-pack ingest-signed-remote-evidence --help
+
+  5. Close the deployment using the normalized evidence produced by ingestion.
+       deploy-pack mark <deployed-ref> --evidence <evidence.json>
+
+  6. Confirm deployment state.
+       deploy-pack baseline
+       deploy-pack history --limit 5
+       deploy-pack history-verify
+       deploy-pack deploy status
+
+DONE MEANS
+  • baseline resolves to the Git revision now running in production;
+  • deployment history contains the new record;
+  • history verification passes;
+  • deployment status is healthy.
+
+The next Git-aware inspect/pack then compares from this recorded production baseline.
+
+Do not use --unsafe-no-evidence as the normal closeout path. It is an explicit
+bootstrap/recovery escape hatch, not a substitute for production verification.
+
+EVIDENCE ASSURANCE
+Signed remote verification proves host-cooperative remote verification and archive/evidence
+provenance. It is not hostile-host or hardware attestation.
+
+Run the referenced subcommand --help pages for their exact file/format options.
+"""
+
+
+
+def _decorate_help(parser_obj, *, description=None, epilog=None):
+    if parser_obj is None:
+        return
+    if description:
+        parser_obj.description = description
+    if epilog:
+        parser_obj.epilog = epilog
+        parser_obj.formatter_class = DeployPackHelpFormatter
+
+
+def _argument_help(parser_obj, dest, text):
+    if parser_obj is None:
+        return
+    for action in parser_obj._actions:
+        if action.dest == dest:
+            action.help = text
+            return
+
+
+def _choice(subparsers_action, name):
+    return subparsers_action.choices.get(name) if subparsers_action is not None else None
+
+
+def _choice_help(subparsers_action, name, text):
+    if subparsers_action is None:
+        return
+    for action in getattr(subparsers_action, "_choices_actions", ()):
+        if getattr(action, "dest", None) == name:
+            action.help = text
+            return
+
+
+def _apply_complete_help_surface(sub, asub, deploy_sub, rollback_sub, vsub, ksub, rsub, rtrustsub):
+    # Top-level Git selection and deployment state.
+    inspect = _choice(sub, "inspect")
+    _decorate_help(inspect,
+        description="Preview the exact Git-aware deployment surface without creating an archive. Shows deployable changes, excluded changes with reasons, and remote deletions relative to the selected production baseline.",
+        epilog="""EXAMPLES
+  deploy-pack inspect
+  deploy-pack inspect HEAD~1
+  deploy-pack inspect --committed-only
+
+SELECTION
+  The project [pack].include allowlist is the deployment ceiling. --include and --ignore can only narrow it. Use this command before pack when changing deployment policy.""")
+    _argument_help(inspect, "baseline", "Git revision representing current production; defaults to the recorded deployment baseline.")
+    _argument_help(inspect, "ignore", "Additional narrowing exclusion glob; repeatable.")
+    _argument_help(inspect, "include", "Additional narrowing inclusion glob; repeatable and cannot expand project policy.")
+    _argument_help(inspect, "committed_only", "Ignore working-tree changes and inspect committed Git changes only.")
+
+    baseline = _choice(sub, "baseline")
+    _decorate_help(baseline,
+        description="Show the recorded production Git baseline used by Git-aware inspect and pack operations.",
+        epilog="""The baseline must represent the Git commit whose deployable bytes are currently running in production. It may legitimately be behind local HEAD. Do not edit .deploy-pack-baseline manually; use verified mark/reconciliation workflows.""")
+
+    mark = _choice(sub, "mark")
+    if mark is not None:
+        # Preserve the detailed closeout help already installed by GIT-CLOSEOUT-HELP-01.
+        _argument_help(mark, "ref", "Git ref/commit that exactly represents the deployed production bytes. Default: HEAD.")
+        _argument_help(mark, "evidence", "Normalized deploy-pack verification evidence for the exact deployed archive.")
+        _argument_help(mark, "archive", "Exact local archive to which the evidence is bound; strongly recommended/required for normal signed closeout.")
+        _argument_help(mark, "unsafe_no_evidence", "Emergency/bootstrap escape hatch. Record without verification evidence; never use for routine closeout.")
+
+    reconcile = _choice(sub, "reconcile-baseline")
+    if reconcile is not None:
+        _decorate_help(reconcile,
+            description="Correct a previously recorded production baseline when production bytes are already correct but the recorded Git ref is wrong. This is an audited reconciliation, not another deployment and not an evidence bypass.",
+            epilog="""REQUIRES
+  • a fresh correction archive whose manifest headCommit is the intended target ref;
+  • fresh signed remote evidence proving production matches that exact archive;
+  • a non-empty operator reason;
+  • a target that satisfies deploy-pack's reconciliation ancestry rules.
+
+EXAMPLE
+  deploy-pack reconcile-baseline 444b22c \\
+    --archive ../deploy-pack-closeout-444b22c/baseline-correction-444b22c.zip \\
+    --evidence ../deploy-pack-closeout-444b22c/baseline-correction-444b22c-evidence.json \\
+    --reason "Earlier closeout recorded the pre-commit ref; production matches 444b22c."
+
+Do not use this when a normal verified `mark` is sufficient.""")
+
+    deploy = _choice(sub, "deploy")
+    _decorate_help(deploy,
+        description="Deployment-state health operations. Use `deploy status` after closeout, recovery, signer rotation, or custody changes.",
+        epilog="Run `deploy-pack deploy status --help` for health semantics and machine-readable/quiet modes.")
+    _choice_help(deploy_sub, "status", "Evaluate baseline, ledger, verifier/replay, recovery, custody, and transaction health.")
+    status = _choice(deploy_sub, "status")
+    _decorate_help(status,
+        description="Evaluate the current deploy-pack operational state and report whether deployment governance is healthy.",
+        epilog="""USE AFTER
+  deploy-pack mark ...
+  deploy-pack reconcile-baseline ...
+  recovery/trust changes
+  offline-custody checkpoint updates
+
+Exit status is suitable for CI/operator gates. Use --json for structured output and --quiet when only the exit code matters.""")
+    _argument_help(status, "json", "Emit structured machine-readable deployment status.")
+    _argument_help(status, "quiet", "Suppress normal output; communicate health through the process exit code.")
+
+    history = _choice(sub, "history")
+    _decorate_help(history,
+        description="Read the append-only deployment ledger, including forward deployments, rollbacks, and audited reconciliations.",
+        epilog="""EXAMPLES
+  deploy-pack history
+  deploy-pack history --limit 5
+  deploy-pack history --json
+
+Use `deploy-pack history-verify` to verify the ledger/hash-chain integrity rather than merely displaying records.""")
+    _argument_help(history, "limit", "Show only the most recent N deployment records.")
+    _argument_help(history, "json", "Emit deployment history as machine-readable JSON.")
+
+    hv = _choice(sub, "history-verify")
+    _decorate_help(hv,
+        description="Verify deployment-ledger integrity, including record linkage/hash-chain invariants and supported custody anchoring checks.",
+        epilog="A successful display of history is not equivalent to verification. Run this as a post-closeout gate and before relying on rollback ancestry.")
+
+    # Verification and evidence lifecycle.
+    verify = _choice(sub, "verify")
+    _decorate_help(verify,
+        description="Verify a deploy-pack archive, and optionally compare its manifest against an extracted deployment tree.",
+        epilog="""EXAMPLES
+  deploy-pack verify deploy.zip
+  deploy-pack verify deploy.zip --root /path/to/extracted/tree
+  deploy-pack verify deploy.zip --evidence-out verify-evidence.json
+
+`verify` is local verification. For production verification, generate a remote verifier with `deploy-pack remote-verifier`.""")
+    _argument_help(verify, "archive", "Deploy-pack archive whose embedded manifest/content will be verified.")
+    _argument_help(verify, "checksum", "Expected archive checksum, when independently supplied.")
+    _argument_help(verify, "root", "Extracted deployment root to compare against the archive manifest.")
+    _argument_help(verify, "evidence_out", "Write durable local verification evidence JSON to this path.")
+
+    rv = _choice(sub, "remote-verifier")
+    _decorate_help(rv,
+        description="Generate a temporary verifier bound to one exact deploy-pack archive for execution against a remote/production deployment tree.",
+        epilog="""SIGNED WORKFLOW
+  1. deploy-pack verifier issue --ttl-minutes 60
+  2. deploy-pack remote-verifier deploy.zip --language php --sign \\
+       --verifier-id <issued-id> --output deploy.verify-signed.php
+  3. Upload/run only the generated verifier against production.
+  4. Bring its signed evidence JSON back locally.
+  5. deploy-pack ingest-signed-remote-evidence ...
+
+OUTPUTS
+  --sign also creates <verifier>.public-key.json. That sidecar is the --public-key input for signed-evidence ingestion.
+
+SECURITY
+  Signed remote verification is host-cooperative evidence. Remove the generated signed verifier from production after evidence retrieval; it contains ephemeral signing material.""")
+    _argument_help(rv, "archive", "Exact local deploy-pack archive whose manifest the generated verifier will enforce.")
+    _argument_help(rv, "language", "Generated verifier runtime: php (default) or python.")
+    _argument_help(rv, "output", "Generated verifier path. Keep it outside the application deployment surface when practical.")
+    _argument_help(rv, "sign", "Generate an ephemeral Ed25519 signing verifier and public-key sidecar.")
+    _argument_help(rv, "verifier_id", "Active verifier identity returned by `deploy-pack verifier issue`; required with --sign.")
+
+    ingest = _choice(sub, "ingest-remote-evidence")
+    _decorate_help(ingest,
+        description="Validate unsigned remote verifier output and bind it to the exact local archive, producing normalized deploy-pack evidence.",
+        epilog="Unsigned remote evidence is a legacy/compatibility path. Prefer `ingest-signed-remote-evidence` for routine production closeout.")
+    _argument_help(ingest, "remote_evidence", "Remote verifier evidence JSON returned from the deployment host.")
+    _argument_help(ingest, "archive", "Exact local archive the remote evidence must match.")
+    _argument_help(ingest, "output", "Write normalized evidence JSON to this path.")
+
+    singest = _choice(sub, "ingest-signed-remote-evidence")
+    _decorate_help(singest,
+        description="Verify signed remote evidence, verifier identity/signature/replay bindings, and archive identity; emit normalized evidence suitable for `mark` or reconciliation.",
+        epilog="""EXAMPLE
+  deploy-pack ingest-signed-remote-evidence \\
+    deploy.signed-evidence.json deploy.zip \\
+    --public-key deploy.verify-signed.php.public-key.json \\
+    --output deploy.normalized-evidence.json
+
+The public-key file is generated beside a signed remote verifier. Do not substitute an unrelated key.""")
+    _argument_help(singest, "signed_remote_evidence", "Signed JSON emitted by the generated production verifier.")
+    _argument_help(singest, "archive", "Exact local archive whose identity must match the signed evidence.")
+    _argument_help(singest, "public_key", "Public-key sidecar generated with the signed verifier.")
+    _argument_help(singest, "output", "Write normalized signed evidence JSON here.")
+
+    # Verifier identities and signing keys.
+    verifier = _choice(sub, "verifier")
+    _decorate_help(verifier,
+        description="Manage short-lived verifier identities used to precommit the signing key/nonce/expiry for signed remote verification.",
+        epilog="Typical flow: `verifier issue` → `remote-verifier --sign --verifier-id ...` → production verification → signed evidence ingestion. Identities are intentionally short-lived.")
+    _choice_help(vsub, "issue", "Issue a short-lived verifier identity for a new signed remote verification cycle.")
+    _choice_help(vsub, "show", "Show verifier identity, key commitment, expiry, nonce, and revocation state.")
+    _choice_help(vsub, "revoke", "Revoke a verifier identity so it can no longer be accepted.")
+    vi=_choice(vsub,"issue"); vs=_choice(vsub,"show"); vr=_choice(vsub,"revoke")
+    _decorate_help(vi, description="Issue a fresh verifier identity. The returned ID must be supplied to `remote-verifier --sign`.")
+    _argument_help(vi,"ttl_minutes","Verifier lifetime in minutes. Default: 30.")
+    _decorate_help(vs, description="Display one verifier identity and its lifecycle/key-precommitment state.")
+    _argument_help(vs,"verifier_id","Verifier ID returned by `deploy-pack verifier issue`.")
+    _decorate_help(vr, description="Revoke one verifier identity immediately.", epilog="Revocation is appropriate when a generated verifier or its signing material may have been exposed before a verification cycle completed.")
+    _argument_help(vr,"verifier_id","Verifier ID to revoke.")
+
+    keys=_choice(sub,"keys")
+    _decorate_help(keys, description="Inspect or revoke registered evidence-signing keys used by deploy-pack trust/evidence workflows.")
+    _choice_help(ksub,"show","Show registered signing keys and revocation state.")
+    _choice_help(ksub,"revoke","Revoke a signing-key fingerprint with an auditable reason.")
+    krev=_choice(ksub,"revoke")
+    _argument_help(krev,"fingerprint","Signing-key fingerprint to revoke.")
+    _argument_help(krev,"reason","Required audit reason for the revocation.")
+
+    # Assurance taxonomy.
+    assurance=_choice(sub,"assurance")
+    _decorate_help(assurance,
+        description="Explain what deploy-pack evidence can and cannot prove. This distinguishes archive integrity, host-cooperative signed verification, and reserved stronger assurance models.",
+        epilog="Signed remote evidence protects provenance and post-signing integrity; it does not prove that a hostile/compromised host reported truthfully.")
+    _choice_help(asub,"show","List all evidence assurance levels and support status.")
+    _choice_help(asub,"explain","Explain claims and non-claims for one assurance level.")
+    ashow=_choice(asub,"show"); aex=_choice(asub,"explain")
+    _argument_help(ashow,"json","Emit the assurance taxonomy as JSON.")
+    _argument_help(aex,"level","Assurance level to explain.")
+    _argument_help(aex,"json","Emit the selected assurance definition as JSON.")
+
+    # Rollback.
+    rollback=_choice(sub,"rollback")
+    _decorate_help(rollback,
+        description="Plan and inspect rollbacks using deployment history. Planning does not itself mutate the production baseline.",
+        epilog="Use `rollback diff` first when you only need to understand the delta. Use `rollback plan` when you need the rollback package/artifacts.")
+    _choice_help(rollback_sub,"plan","Build/preview a rollback package from current production to a historical deployment record.")
+    _choice_help(rollback_sub,"diff","Show rollback additions/changes/deletions without creating an archive.")
+    rp=_choice(rollback_sub,"plan"); rd=_choice(rollback_sub,"diff")
+    _decorate_help(rp, description="Prepare a rollback deployment package targeting a historical deployment record. Does not advance the baseline by itself.", epilog="After deploying a rollback package, verify production and close it through the normal evidence/mark path so history records the rollback explicitly.")
+    _argument_help(rp,"record","Historical deployment record to roll back to.")
+    _argument_help(rp,"from_record","Hypothetical historical source record; otherwise use actual current production.")
+    _argument_help(rp,"output","Output rollback archive path.")
+    _argument_help(rp,"dry_run","Plan only; do not write the rollback package.")
+    _decorate_help(rd, description="Report the file-level rollback delta between actual/current production (or --from history record) and a historical target.")
+
+    # Recovery/trust/custody: previously almost entirely undocumented in --help.
+    recovery=_choice(sub,"recovery")
+    _decorate_help(recovery,
+        description="Create, validate, import, and govern recovery material; manage recovery signer trust and offline custody/checkpoints.",
+        epilog="""SAFETY
+  Recovery/trust operations can change which recovery material is accepted. Inspect the exact subcommand help before use, retain offline custody copies, and run `deploy-pack deploy status` afterward.
+
+GROUPS
+  export / verify / import       Recovery bundles
+  trust add/show/revoke          Recovery-signer trust
+  trust export-offline/...       Offline trust-anchor custody
+  trust checkpoint-*             Custody checkpoint history/integrity""")
+
+    for name,text in {
+        "export":"Export a recovery bundle; signed by default.",
+        "verify":"Verify a recovery bundle with the supplied public key.",
+        "import":"Import validated recovery material; unsigned import requires an explicit override.",
+        "trust":"Manage recovery signer trust, offline custody copies, quorum, and checkpoints.",
+    }.items(): _choice_help(rsub,name,text)
+    rex=_choice(rsub,"export"); rver=_choice(rsub,"verify"); rim=_choice(rsub,"import"); trust=_choice(rsub,"trust")
+    _decorate_help(rex, description="Export current recovery state as a portable recovery bundle.", epilog="Signed export is the normal path. --unsigned exists for explicitly controlled compatibility/recovery scenarios.")
+    _argument_help(rex,"output","Recovery bundle output path."); _argument_help(rex,"unsigned","Export without a signature; weaker and not the routine path.")
+    _decorate_help(rver, description="Cryptographically verify a recovery bundle without importing it.")
+    _argument_help(rver,"bundle","Recovery bundle to verify."); _argument_help(rver,"public_key","Public key expected to verify the bundle signature.")
+    _decorate_help(rim, description="Import recovery material after validating its signature/trust requirements.", epilog="Prefer signed/trusted recovery imports. --allow-unsigned is an explicit weakening override.")
+    _argument_help(rim,"bundle","Recovery bundle to import."); _argument_help(rim,"public_key","Public key used to verify the bundle when required."); _argument_help(rim,"allow_unsigned","Explicitly permit an unsigned recovery bundle.")
+    _decorate_help(trust, description="Manage accepted recovery signers plus offline trust-anchor custody and checkpoint verification.")
+
+    trust_help={
+      "add":"Add/trust a recovery signer; optionally activate it and record predecessor/reason metadata.",
+      "show":"Show trusted/revoked recovery signer state.",
+      "revoke":"Revoke a trusted recovery signer with a required reason.",
+      "export-offline":"Export a signed offline trust anchor/checkpoint for separate custody.",
+      "verify-offline":"Verify one offline trust anchor against a public key and optional expected fingerprint.",
+      "export-copies":"Create multiple custody copies and encode the required quorum.",
+      "verify-copy-set":"Verify a set of offline custody copies and checkpoint expectations.",
+      "verify-quorum":"Verify that supplied offline custody material satisfies a quorum.",
+      "checkpoint-history":"Show offline custody checkpoint history.",
+      "checkpoint-show":"Show one checkpoint record.",
+      "checkpoint-verify":"Verify offline checkpoint history/integrity.",
+    }
+    for name,text in trust_help.items(): _choice_help(rtrustsub,name,text)
+    for name in trust_help:
+        _decorate_help(_choice(rtrustsub,name), description=trust_help[name])
+    add=_choice(rtrustsub,"add"); revoke=_choice(rtrustsub,"revoke"); off=_choice(rtrustsub,"export-offline"); voff=_choice(rtrustsub,"verify-offline")
+    _argument_help(add,"public_key","Recovery signer public-key file to trust."); _argument_help(add,"activate","Make this signer active after trust registration."); _argument_help(add,"predecessor","Expected predecessor signer identifier for controlled rotation."); _argument_help(add,"reason","Audit reason for trust addition/rotation.")
+    _argument_help(revoke,"signer_id","Trusted recovery signer identifier to revoke."); _argument_help(revoke,"reason","Required audit reason for revocation.")
+    _argument_help(off,"output","Offline trust-anchor output path.")
+    _argument_help(voff,"anchor","Offline trust-anchor file to verify."); _argument_help(voff,"public_key","Public key used to verify the anchor."); _argument_help(voff,"expected_fingerprint","Require this signer/key fingerprint.")
+
+
 def parser():
     p = argparse.ArgumentParser(
-        prog="deploy-pack",
+        prog=_program_name(),
         description=DEPLOY_PACK_DESCRIPTION,
         epilog=DEPLOY_PACK_HELP_EPILOG,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        formatter_class=DeployPackHelpFormatter,
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="command", title="commands", metavar="<command>")
@@ -147,12 +595,39 @@ def parser():
     )
     init.add_argument("--force", action="store_true", help="Replace an existing .deploy-pack.toml.")
 
+    gitignore_cmd = sub.add_parser(
+        "gitignore",
+        help="Manage deploy-pack generated-artifact rules in the repository .gitignore.",
+        description=(
+            "Install, inspect, or remove deploy-pack's bounded managed .gitignore block. "
+            "Project-authored rules outside the block are preserved."
+        ),
+    )
+    gitignore_sub = gitignore_cmd.add_subparsers(dest="gitignore_command")
+    gitignore_status = gitignore_sub.add_parser(
+        "status",
+        help="Report whether the managed deploy-pack .gitignore block is current.",
+    )
+    gitignore_status.add_argument(
+        "--check",
+        action="store_true",
+        help="Exit nonzero when the managed block is missing/stale or durable state is ignored.",
+    )
+    gitignore_sub.add_parser(
+        "install",
+        help="Install or reconcile the managed block at the end of .gitignore.",
+    )
+    gitignore_sub.add_parser(
+        "remove",
+        help="Remove only the deploy-pack managed block.",
+    )
+
     pack = sub.add_parser(
         "pack",
         help="Package a Git-selected deployment change set.",
         description=PACK_HELP,
         epilog=PACK_EPILOG,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        formatter_class=DeployPackHelpFormatter,
     )
     pack.add_argument("baseline", nargs="?", help="Git revision representing current production; defaults to recorded baseline.")
     pack.add_argument("-o", "--output")
@@ -166,7 +641,7 @@ def parser():
         help="Package an already-built deployment directory without consulting Git.",
         description=ARTIFACT_HELP,
         epilog=ARTIFACT_EPILOG,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        formatter_class=DeployPackHelpFormatter,
     )
     artifact.add_argument("--source", required=True, help="Deployment-ready source directory.")
     artifact.add_argument("--format", choices=["zip", "tar.gz"], default="zip", help="Archive format. Default: zip.")
@@ -184,6 +659,9 @@ def parser():
     inspect.add_argument("--committed-only", action="store_true")
 
     mark = sub.add_parser("mark", help="Record a verified deployment baseline/history entry.")
+    mark.description = GIT_AWARE_CLOSEOUT_HELP
+    mark.epilog = GIT_AWARE_CLOSEOUT_EPILOG
+    mark.formatter_class = DeployPackHelpFormatter
     mark.add_argument("ref", nargs="?", default="HEAD")
     mark.add_argument("--evidence")
     mark.add_argument("--archive")
@@ -201,6 +679,15 @@ def parser():
         type=int,
         help="Record this mark as an intentional rollback to the given history record.",
     )
+
+    reconcile = sub.add_parser(
+        "reconcile-baseline",
+        help="Correct a recorded production baseline using fresh target-bound signed evidence.",
+    )
+    reconcile.add_argument("ref", help="Git ref/commit that exactly represents current production bytes.")
+    reconcile.add_argument("--archive", required=True, help="Correction archive whose manifest headCommit resolves to REF.")
+    reconcile.add_argument("--evidence", required=True, help="Fresh normalized signed remote evidence for --archive.")
+    reconcile.add_argument("--reason", required=True, help="Operator/audit reason for correcting the recorded baseline.")
 
     assurance = sub.add_parser("assurance", help="Show the deployment-evidence assurance taxonomy.")
     asub = assurance.add_subparsers(dest="assurance_command")
@@ -347,6 +834,8 @@ def parser():
     rtch = rtrustsub.add_parser("checkpoint-history"); rtch.add_argument("--json",action="store_true")
     rtcs = rtrustsub.add_parser("checkpoint-show"); rtcs.add_argument("record"); rtcs.add_argument("--json",action="store_true")
     rtrustsub.add_parser("checkpoint-verify")
+    _apply_complete_help_surface(sub, asub, deploy_sub, rollback_sub, vsub, ksub, rsub, rtrustsub)
+    _apply_help_formatter_tree(p)
     return p
 
 def show_plan(plan):
@@ -485,7 +974,8 @@ def main(argv=None):
                 path, public_key = write_signed_remote_verifier(Path(args.archive), args.language, identity, output, root=rr)
                 print(f"Generated signed {args.language} remote verifier: {path}")
                 print(f"Verification public key: {public_key}")
-                print("Remote usage: add --signed-evidence-out <file.json>")
+                print(f"Remote usage: {args.language == 'php' and 'php' or 'python3'} {path.name} --signed-evidence-out <file.json>")
+                print("Optional deployment root: place ROOT before or after options; default is current directory.")
                 print("SECURITY: delete the signed verifier from the server immediately after use.")
                 return 0
 
@@ -673,6 +1163,13 @@ def main(argv=None):
                 print(json.dumps(result,indent=2,sort_keys=True)); return 0
             raise DeployPackError("recovery requires export, verify, or import")
 
+        if args.command == "gitignore":
+            root = repo_root()
+            try:
+                return run_gitignore_command(root, args)
+            except GitignoreManagedError as exc:
+                raise DeployPackError(str(exc)) from exc
+
         root = repo_root()
 
         if args.command == "init":
@@ -703,7 +1200,14 @@ def main(argv=None):
                 "",
             ])
             atomic_write_text(config_path, "\n".join(starter))
+            try:
+                gitignore_outcome = install_managed_gitignore(root)
+            except GitignoreManagedError as exc:
+                raise DeployPackError(
+                    f"{CONFIG_FILE} was created, but managed .gitignore installation failed: {exc}"
+                ) from exc
             print("DEPLOY-PACK INIT")
+            print(f"  gitignore: {gitignore_outcome}")
             print(f"  created : {config_path}")
             print("  policy  : allowlist / fail-closed")
             print("  review  : [pack].include before packaging")
@@ -1007,6 +1511,59 @@ def main(argv=None):
                 print("\\nHypothetical plan only: source record was not asserted to be current production.")
             print("No deployment state was changed.")
             return 0
+
+        if args.command == "reconcile-baseline":
+            from .lifecycle import REPLAY_STATE_FILE
+            from .core import LEDGER_FILE
+            with repository_lock(root):
+                recovered = recover_mark_transaction(root)
+                if recovered:
+                    print("WARNING: recovered an incomplete prior mark transaction before continuing.")
+                evidence_path = Path(args.evidence).expanduser().resolve()
+                archive_path = Path(args.archive).expanduser().resolve()
+                previous_commit, resolved, evidence = validate_baseline_reconciliation(
+                    root, args.ref, evidence_path, archive=archive_path
+                )
+                if not evidence_is_signed_remote(evidence):
+                    raise DeployPackError("baseline reconciliation requires signed remote evidence")
+                replay_key = assert_signed_evidence_usable(root, evidence)
+                tx_paths = [root / BASELINE_FILE, root / LEDGER_FILE, root / REPLAY_STATE_FILE]
+                evidence_for_history = dict(evidence)
+                evidence_for_history["trustMode"] = "signed-remote"
+                begin_mark_transaction(
+                    root, tx_paths,
+                    {"command":"reconcile-baseline","ref":args.ref,"unsafe":False,"evidence":str(evidence_path)},
+                )
+                try:
+                    write_baseline(root, args.ref)
+                    append_deployment_history(
+                        root,
+                        previous_baseline=previous_commit,
+                        new_baseline_ref=args.ref,
+                        new_baseline_commit=resolved,
+                        evidence_path=evidence_path,
+                        evidence=evidence_for_history,
+                        archive=archive_path,
+                        unsafe=False,
+                        deployment_kind="reconciliation",
+                        reconciliation_reason=args.reason,
+                    )
+                    consume_signed_evidence(
+                        root, replay_key, evidence_path=evidence_path,
+                        marked_ref=args.ref, marked_commit=resolved,
+                    )
+                    commit_mark_transaction(root)
+                except Exception:
+                    recover_mark_transaction(root)
+                    raise
+                print("DEPLOY-PACK BASELINE RECONCILIATION: PASS")
+                print(f"Previous recorded baseline : {previous_commit}")
+                print(f"Corrected baseline         : {resolved}")
+                print(f"Evidence                   : {evidence_path}")
+                print(f"Archive                    : {archive_path}")
+                print(f"Reason                     : {args.reason}")
+                print("Deployment history         : appended (reconciliation)")
+                return 0
 
         if args.command == "mark":
             from .lifecycle import REPLAY_STATE_FILE

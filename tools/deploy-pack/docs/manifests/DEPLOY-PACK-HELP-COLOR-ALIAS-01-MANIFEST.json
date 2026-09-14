@@ -1,0 +1,12 @@
+{
+  "canonicalCommand": "deploy-pack",
+  "changes": [
+    "tty-aware-help-color",
+    "dp-short-alias",
+    "alias-collision-protection"
+  ],
+  "increment": "DEPLOY-PACK-HELP-COLOR-ALIAS-01",
+  "releaseVersion": "1.14.2",
+  "shortAlias": "dp",
+  "trustSemanticsChanged": false
+}

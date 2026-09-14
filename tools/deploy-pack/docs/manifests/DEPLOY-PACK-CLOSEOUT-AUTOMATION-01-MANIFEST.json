@@ -1,0 +1,16 @@
+{
+  "increment": "DEPLOY-PACK-CLOSEOUT-AUTOMATION-01",
+  "releaseVersion": "1.14.0",
+  "interface": {
+    "prepare": "make deploy-prepare",
+    "finish": "make deploy-closeout EVIDENCE=<signed-evidence.json>",
+    "status": "make deploy-closeout-status"
+  },
+  "properties": {
+    "twoPhase": true,
+    "remoteBoundaryExplicit": true,
+    "requiresCanonicalCommittedRef": true,
+    "sessionOutsideRepositoryByDefault": true,
+    "unsafeEvidenceBypass": false
+  }
+}

@@ -111,3 +111,6 @@ package-distribution:
 distribution-smoke:
 	@if [[ -z "$(ARCHIVE)" ]]; then echo "ERROR: ARCHIVE=<archive.zip> is required"; exit 2; fi
 	@python3 scripts/distribution-smoke "$(ARCHIVE)"
+
+# deploy-pack integration
+-include mk/deploy-pack.inc

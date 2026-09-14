@@ -1,0 +1,16 @@
+{
+  "increment": "DEPLOY-PACK-GITIGNORE-01",
+  "version": "1.15.0",
+  "type": "feature",
+  "commands": ["gitignore status", "gitignore install", "gitignore remove"],
+  "invariants": [
+    "project-authored .gitignore bytes outside the managed block are preserved",
+    "exactly one managed block is permitted",
+    "managed block is reconciled at EOF",
+    ".deploy-pack.toml remains visible to Git",
+    ".deploy-pack-baseline remains visible to Git",
+    ".deploy-pack-history.jsonl remains visible to Git",
+    "init installs the managed block",
+    "status --check is suitable for CI"
+  ]
+}

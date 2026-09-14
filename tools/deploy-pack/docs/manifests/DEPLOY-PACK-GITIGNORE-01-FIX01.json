@@ -1,0 +1,15 @@
+{
+  "increment": "DEPLOY-PACK-GITIGNORE-01-FIX01",
+  "version": "1.15.1",
+  "type": "bugfix",
+  "adds_managed_ignores": [
+    ".deploy-pack-keyring.json",
+    ".deploy-pack-replay.json",
+    ".deploy-pack-verifiers.json"
+  ],
+  "durable_visible_paths": [
+    ".deploy-pack.toml",
+    ".deploy-pack-baseline",
+    ".deploy-pack-history.jsonl"
+  ]
+}
